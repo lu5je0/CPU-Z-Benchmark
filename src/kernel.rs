@@ -1,1 +1,114 @@
-// Placeholder, filled in later commits.
+//! Per-pixel render kernel: two noise samples + color mixing, byte-identical
+//! to CPU-Z's sub_14004A750 (17.01) / sub_140030570 (19.01).
+//!
+//! Pixel layout is RGBA: R = c1*255, G = c2*255, B = c3*255, A = 0xFF.
+//!
+//! Mixing math (from disassembly):
+//!   n1 = noiseA(x, y), n2 = noiseB(x, y)
+//!   v15 = clamp(n2 * 0.6 + 0.5, 0, 1)
+//!   v16 = clamp(n1 + n2, 0, 1)
+//!   v20 = clamp(v15 + 0.1, 0, 1)
+//!   v21 = clamp(v15 + 0.2, 0, 1)
+//!   v24 = clamp(v15 * 0.9 + 0.3, 0, 1)
+//!   c1  = v20 * v16 + (1 - v16) * 0.2
+//!   c2  = v21 * v16 + (1 - v16) * 0.4
+//!   c3  = v24 * v16 + (1 - v16) * 0.6
+//!
+//! Coordinate convention (from worker disassembly):
+//!   sample x = x0 + i, sample y = y0 + row, buffer row = row.
+//! CPU-Z writes pixel data into buffer row `row` (sub_14004A750 uses
+//! v11 = buffer + 4*row*width + 2), while noise is sampled at
+//! (x0 + i, y0 + row).
+
+/// Which noise engine to use.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Engine {
+    /// 17.01 SSE (default benchmark version)
+    V1701,
+    /// 19.01 SSE
+    V1901,
+}
+
+#[inline(always)]
+fn clamp01(v: f32) -> f32 {
+    if v < 0.0 {
+        0.0
+    } else if v > 1.0 {
+        1.0
+    } else {
+        v
+    }
+}
+
+/// Render one pixel. x, y are sample coordinates.
+#[inline(always)]
+pub fn pixel(engine: Engine, x: i32, y: i32) -> [u8; 4] {
+    let (n1, n2) = match engine {
+        Engine::V1701 => (
+            crate::noise::noise_a(x, y),
+            crate::noise::noise_b(x, y),
+        ),
+        Engine::V1901 => (
+            crate::noise1901::noise_a(x, y),
+            crate::noise1901::noise_b(x, y),
+        ),
+    };
+
+    let v15 = clamp01(n2 * 0.60000002 + 0.5);
+    let v16 = clamp01(n1 + n2);
+    let v20 = clamp01(v15 + 0.1);
+    let v21 = clamp01(v15 + 0.2);
+    let v24 = clamp01(v15 * 0.89999998 + 0.30000001);
+
+    let inv = 1.0 - v16;
+    let c1 = v20 * v16 + inv * 0.2;
+    let c2 = v21 * v16 + inv * 0.40000001;
+    let c3 = v24 * v16 + inv * 0.60000002;
+
+    [
+        (c1 * 255.0) as u8,
+        (c2 * 255.0) as u8,
+        (c3 * 255.0) as u8,
+        0xFF,
+    ]
+}
+
+/// Render `rows` horizontal lines into buf.
+///
+/// - Sample coordinates: x in [x0, x0+width), y = y0 + (row0 + r).
+/// - Buffer: each row r is written at offset (row0 + r) * row_stride.
+#[inline(always)]
+pub fn render_rows(
+    engine: Engine,
+    buf: &mut [u8],
+    x0: i32,
+    y0: i32,
+    row0: i32,
+    rows: usize,
+    width: usize,
+    row_stride: usize,
+) {
+    for r in 0..rows {
+        let row = row0 + r as i32;
+        let base = row as usize * row_stride;
+        let sy = y0 + row;
+        for i in 0..width {
+            let p = pixel(engine, x0 + i as i32, sy);
+            let off = base + i * 4;
+            buf[off..off + 4].copy_from_slice(&p);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn alpha_always_ff() {
+        for &(x, y) in &[(0, 0), (1, 1), (1023, 1023)] {
+            assert_eq!(pixel(Engine::V1701, x, y)[3], 0xFF);
+            assert_eq!(pixel(Engine::V1901, x, y)[3], 0xFF);
+        }
+    }
+}
