@@ -29,6 +29,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::affinity::pin_thread_to_cpu;
 use crate::kernel::{render_rows, Engine};
 
 pub const BENCH_WIDTH: usize = 1024;
@@ -92,12 +93,13 @@ struct Worker {
     rows: AtomicU32,
     width: AtomicU32,
     buf: Arc<SharedBuf>,
+    thread: std::thread::Thread,
 }
 
 use std::sync::atomic::AtomicI32;
 
 impl Worker {
-    fn new(buf: Arc<SharedBuf>) -> Arc<Self> {
+    fn new(buf: Arc<SharedBuf>, cpu: Option<usize>) -> Arc<Self> {
         let w = Arc::new(Worker {
             busy: AtomicBool::new(false),
             units: AtomicU32::new(0),
@@ -109,13 +111,23 @@ impl Worker {
             rows: AtomicU32::new(0),
             width: AtomicU32::new(0),
             buf,
+            thread: std::thread::current(),
         });
         let wh = Arc::clone(&w);
-        std::thread::spawn(move || worker_loop(wh));
+        std::thread::spawn(move || {
+            if let Some(c) = cpu {
+                pin_thread_to_cpu(c);
+            }
+            worker_loop(wh);
+        });
+        // unpark: we parked before spawn? No: park is inside worker_loop,
+        // the token is consumed only after dispatch. Use a fresh unpark in
+        // dispatch (see below).
         w
     }
 
-    /// Queue a job: write fields, publish via busy flag.
+    /// Queue a job: write fields, publish via busy flag, wake the worker
+    /// (mirrors QueueUserAPC).
     fn dispatch(&self, job: &Job) {
         self.engine.store(job.engine as u32, Ordering::Release);
         self.x0.store(job.x0, Ordering::Release);
@@ -125,23 +137,31 @@ impl Worker {
         self.width.store(job.width as u32, Ordering::Release);
         self.units.store(0, Ordering::Release);
         self.busy.store(true, Ordering::Release);
+        self.thread.unpark();
     }
 
     /// Wait until the worker finished its current job.
+    /// Dispatcher side mirrors CPU-Z's Sleep(0) polling (sub_14002FC00):
+    /// yield immediately so we never burn a core the workers need.
     fn wait_idle(&self) {
         while self.busy.load(Ordering::Acquire) {
-            std::hint::spin_loop();
+            std::thread::yield_now();
         }
     }
 }
 
 fn worker_loop(w: Arc<Worker>) {
     loop {
+        // wait for a job: block like CPU-Z's
+        // WaitForSingleObjectEx(hHandle, INFINITE, TRUE) alertable wait.
+        // park() blocks without burning the SMT sibling core; dispatch()
+        // wakes us with unpark() (mirrors QueueUserAPC). Spurious wakeups
+        // are handled by re-checking busy.
         while !w.busy.load(Ordering::Acquire) {
             if w.stop.load(Ordering::Acquire) {
                 return;
             }
-            std::hint::spin_loop();
+            std::thread::park();
         }
         let engine = match w.engine.load(Ordering::Acquire) {
             0 => Engine::V1701,
@@ -202,51 +222,34 @@ impl Default for BenchOptions {
 /// Build a job for the current iteration/row cursor. Advances the cursor.
 fn make_job(engine: Engine, iter: &mut i32, row: &mut usize) -> Job {
     let w = BENCH_WIDTH as i32;
-    match engine {
-        Engine::V1701 => {
-            // row = v33 wraps at height; iter = v26 increments each wrap
-            let job = Job {
-                engine,
-                x0: *iter,
-                y0: *iter,
-                row0: *row as i32,
-                rows: 1,
-                width: w as usize,
-            };
-            *row += 1;
-            if *row >= BENCH_HEIGHT {
-                *row = 0;
-                *iter += 1;
-            }
-            job
-        }
-        Engine::V1901Sse | Engine::V1901Avx2 => {
-            // row0 = v14 advances by height/8, wraps at height; iter = v15
-            let rpj = BENCH_HEIGHT / 8;
-            let r = rpj.min(BENCH_HEIGHT - *row);
-            let job = Job {
-                engine,
-                x0: *iter,
-                y0: *iter,
-                row0: *row as i32,
-                rows: r,
-                width: w as usize,
-            };
-            *row += r;
-            if *row >= BENCH_HEIGHT {
-                *row = 0;
-                *iter += 1;
-            }
-            job
-        }
+    // Both engines batch rows: units (=rows*width) are accumulated per job,
+    // so the score (Σunits/ms) is unchanged by batching, but dispatch
+    // frequency drops, which matters because CPU-Z uses fast APC wake-ups
+    // while we use portable spin/yield. Batch size mirrors CPU-Z's
+    // "height/8" stepping (v14 += a4/8 in sub_1400307F0).
+    let rpj = BENCH_HEIGHT / 8;
+    let r = rpj.min(BENCH_HEIGHT - *row);
+    let job = Job {
+        engine,
+        x0: *iter,
+        y0: *iter,
+        row0: *row as i32,
+        rows: r,
+        width: w as usize,
+    };
+    *row += r;
+    if *row >= BENCH_HEIGHT {
+        *row = 0;
+        *iter += 1;
     }
+    job
 }
 
 /// Run the single-thread benchmark (one worker).
 /// Returns (score, units, ms).
 pub fn run_single(opts: &BenchOptions) -> (f32, u64, u64) {
     let buf = SharedBuf::new();
-    let worker = Worker::new(Arc::clone(&buf));
+    let worker = Worker::new(Arc::clone(&buf), Some(0));
 
     let mut units: u64 = 0;
     let mut row = 0usize;
@@ -267,7 +270,7 @@ pub fn run_single(opts: &BenchOptions) -> (f32, u64, u64) {
     worker.wait_idle();
     units += worker.units.load(Ordering::Acquire) as u64;
     worker.stop.store(true, Ordering::Release);
-    worker.busy.store(true, Ordering::Release); // wake to exit
+    worker.thread.unpark(); // wake parked worker so it can observe stop
 
     let ms = start.elapsed().as_millis() as u64;
     let score = score_of(opts.engine, units, ms);
@@ -279,7 +282,9 @@ pub fn run_single(opts: &BenchOptions) -> (f32, u64, u64) {
 pub fn run_multi(opts: &BenchOptions) -> (f32, u64, u64) {
     let n = opts.threads.max(1);
     let buf = SharedBuf::new();
-    let workers: Vec<Arc<Worker>> = (0..n).map(|_| Worker::new(Arc::clone(&buf))).collect();
+    let workers: Vec<Arc<Worker>> = (0..n)
+        .map(|i| Worker::new(Arc::clone(&buf), Some(i)))
+        .collect();
 
     let mut units: u64 = 0;
     let mut row = 0usize;
@@ -287,7 +292,7 @@ pub fn run_multi(opts: &BenchOptions) -> (f32, u64, u64) {
 
     let start = Instant::now();
     loop {
-        // find an idle worker, wait for its completion
+        // find an idle worker (dispatcher polls with yield, like CPU-Z)
         let mut idx = None;
         loop {
             for (i, wk) in workers.iter().enumerate() {
@@ -298,7 +303,7 @@ pub fn run_multi(opts: &BenchOptions) -> (f32, u64, u64) {
             }
             match idx {
                 Some(_) => break,
-                None => std::hint::spin_loop(),
+                None => std::thread::yield_now(),
             }
         }
         let wk = &workers[idx.unwrap()];
@@ -316,7 +321,7 @@ pub fn run_multi(opts: &BenchOptions) -> (f32, u64, u64) {
         wk.wait_idle();
         units += wk.units.load(Ordering::Acquire) as u64;
         wk.stop.store(true, Ordering::Release);
-        wk.busy.store(true, Ordering::Release);
+        wk.thread.unpark(); // wake parked worker so it can observe stop
     }
 
     let ms = start.elapsed().as_millis() as u64;

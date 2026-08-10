@@ -16,7 +16,8 @@ use crate::table::gradients_1901;
 /// floor() via truncate + fix (cvttss2si + comiss pattern).
 #[inline(always)]
 fn floor_f32(v: f32) -> f32 {
-    let t = v as i32;
+    // SAFETY: bounded inputs, never overflows i32.
+    let t = unsafe { v.to_int_unchecked::<i32>() };
     let tf = t as f32;
     if tf > v {
         (t - 1) as f32
@@ -28,7 +29,8 @@ fn floor_f32(v: f32) -> f32 {
 /// fract = v - trunc(v), normalized to [0,1) when negative.
 #[inline(always)]
 fn fract_norm(v: f32) -> f32 {
-    let t = v as i32;
+    // SAFETY: bounded inputs.
+    let t = unsafe { v.to_int_unchecked::<i32>() };
     let mut f = v - t as f32;
     if f < 0.0 {
         f += 1.0;
@@ -100,15 +102,43 @@ pub fn single_sample(x: f32, y: f32) -> f32 {
     w0 * dot0 + w1 * dot1 + w2 * dot2
 }
 
-/// 19.01 weight tables (w1, w2 for noise A; w3 for noise B).
+/// 19.01 weight tables recovered bit-exact from cpuz_x64.exe:
+///   w1 @ 0x1403EFEC4 (10 entries)
+///   w2 @ 0x1403EFEEC (10 entries)
+///   w3 @ 0x1403EFF18 (7 entries)
+/// Note w1[0] is the smallest denormal (0x1), not zero.
 const W1: [f32; 10] = [
-    0.0, 0.8, 0.56, 0.392, 0.2744, 0.19208, 0.134456, 0.094119, 0.065883, 0.046118,
+    f32::from_bits(0x0000_0001),
+    f32::from_bits(0x3f4c_cccd),
+    f32::from_bits(0x3f0f_5c29),
+    f32::from_bits(0x3ec8_b439),
+    f32::from_bits(0x3e8c_7e28),
+    f32::from_bits(0x3e44_b09e),
+    f32::from_bits(0x3e09_aed5),
+    f32::from_bits(0x3dc0_c190),
+    f32::from_bits(0x3d86_ede5),
+    f32::from_bits(0x3d3c_e6a7),
 ];
 const W2: [f32; 10] = [
-    0.0323, 0.7, 0.42, 0.252, 0.1512, 0.09072, 0.054432, 0.032659, 0.019596, 0.011757,
+    f32::from_bits(0x3d04_3b0e),
+    f32::from_bits(0x3f33_3333),
+    f32::from_bits(0x3ed7_0a3e),
+    f32::from_bits(0x3e81_0626),
+    f32::from_bits(0x3e1a_d42e),
+    f32::from_bits(0x3db9_cb6b),
+    f32::from_bits(0x3d5e_f41b),
+    f32::from_bits(0x3d05_c5aa),
+    f32::from_bits(0x3ca0_86cc),
+    f32::from_bits(0x3c40_a1c2),
 ];
 const W3: [f32; 7] = [
-    0.4, 0.144, 0.0864, 0.05184, 0.031104, 0.0186624, 0.0111974,
+    f32::from_bits(0x3ecc_cccd),
+    f32::from_bits(0x3e13_74bd),
+    f32::from_bits(0x3db0_f27d),
+    f32::from_bits(0x3d54_5630),
+    f32::from_bits(0x3cfe_cdd4),
+    f32::from_bits(0x3c98_e1e6),
+    f32::from_bits(0x3c37_757b),
 ];
 
 /// sub_140031760: 19.01 noise A.

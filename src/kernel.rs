@@ -111,14 +111,23 @@ pub fn render_rows(
     width: usize,
     row_stride: usize,
 ) {
+    // Fast path: use raw pointer walk like CPU-Z (v11 += 4 per pixel).
+    // SAFETY: caller guarantees rows*row_stride fits in buf, and we iterate
+    // within [0, rows) rows and [0, width) pixels.
+    let base = buf.as_mut_ptr();
     for r in 0..rows {
         let row = row0 + r as i32;
-        let base = row as usize * row_stride;
+        let p = unsafe { base.add((row as usize) * row_stride) };
         let sy = y0 + row;
         for i in 0..width {
-            let p = pixel(engine, x0 + i as i32, sy);
-            let off = base + i * 4;
-            buf[off..off + 4].copy_from_slice(&p);
+            let px = pixel(engine, x0 + i as i32, sy);
+            unsafe {
+                let q = p.add(i * 4);
+                *q = px[0];
+                *q.add(1) = px[1];
+                *q.add(2) = px[2];
+                *q.add(3) = px[3];
+            }
         }
     }
 }

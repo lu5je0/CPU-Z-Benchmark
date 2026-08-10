@@ -1,3 +1,4 @@
+pub mod affinity;
 pub mod bench;
 pub mod kernel;
 pub mod noise;

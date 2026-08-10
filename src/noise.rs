@@ -1,15 +1,21 @@
-//! 17.01 SSE noise engine: OpenSimplex2-style 2D noise, bit-identical to
+//! 17.01 SSE noise engine: OpenSimplex2-style 2D noise, matching
 //! CPU-Z's sub_140049FF0 (single sample), sub_140049E50 (gradient lookup),
 //! sub_14004A340 (noise A) and sub_14004A540 (noise B).
 //!
-//! Constants recovered from cpuz_x64.exe:
-//!   STRETCH 0.21132487, SQUISH 0.36602542, hash multipliers 127.1/311.7/183.3/269.5.
+//! NOTE: single_sample is intentionally NOT inlined. CPU-Z calls
+//! sub_140049FF0 as a real function (MSVC did not inline it); the call
+//! overhead is part of the benchmark's workload and affects the score
+//! (score = units/ms). Inlining everything makes us faster than the
+//! original binary and the score drifts high.
 
 use crate::table::gradients_1701;
 
 /// floor() via the truncate + fix pattern CPU-Z uses (cvttss2si + comiss fix).
+#[inline(always)]
 fn floor_f32(v: f32) -> f32 {
-    let t = v as i32;
+    // SAFETY: input magnitude is bounded (<= ~50 for our coordinate range),
+    // so truncation never overflows i32.
+    let t = unsafe { v.to_int_unchecked::<i32>() };
     let tf = t as f32;
     if tf > v {
         (t - 1) as f32
@@ -19,8 +25,10 @@ fn floor_f32(v: f32) -> f32 {
 }
 
 /// fract = v - trunc(v), normalized to [0,1) by adding 1 when negative.
+#[inline(always)]
 fn fract_norm(v: f32) -> f32 {
-    let t = v as i32;
+    // SAFETY: hash inputs are small bounded floats.
+    let t = unsafe { v.to_int_unchecked::<i32>() };
     let mut f = v - t as f32;
     if f < 0.0 {
         f += 1.0;
@@ -30,7 +38,7 @@ fn fract_norm(v: f32) -> f32 {
 
 /// sub_140049E50: gradient lookup for grid cell (x, y).
 /// Returns (gx, gy) in [-1, 1].
-#[inline(always)]
+#[inline(never)]
 pub fn gradient_lookup(x: f32, y: f32) -> (f32, f32) {
     let table = gradients_1701();
 
@@ -50,7 +58,8 @@ pub fn gradient_lookup(x: f32, y: f32) -> (f32, f32) {
 }
 
 /// sub_140049FF0: single OpenSimplex2 sample at (x, y) in [-1, 1].
-#[inline(always)]
+/// Kept as a real call like the original binary.
+#[inline(never)]
 pub fn single_sample(x: f32, y: f32) -> f32 {
     // stretch transform
     let squish = (x + y) * 0.36602542f32;
@@ -103,9 +112,10 @@ pub fn single_sample(x: f32, y: f32) -> f32 {
 /// (1.6x - 1.2y, 1.2x + 1.6y); amplitudes 0.8*0.7^k and 0.7*0.6^k, *40.
 /// Result: (s1 + s2) * s2 * 8 * s1 + 0.2  where s1 sums |n*w| (abs),
 /// s2 sums n*w (no abs).
+#[inline(never)]
 pub fn noise_a(x: i32, y: i32) -> f32 {
-    let xf = (x as f32) * 1.1f32 * 0.0009765625f32;
-    let yf = (y as f32) * 1.1f32 * 0.0009765625f32;
+    let mut xf = (x as f32) * 1.1f32 * 0.0009765625f32;
+    let mut yf = (y as f32) * 1.1f32 * 0.0009765625f32;
 
     // loop 1: 10 iterations, w starts 0.8, decays *0.7, |n*w| accumulated
     let mut sum1 = 0.0f32;
@@ -145,10 +155,11 @@ pub fn noise_a(x: i32, y: i32) -> f32 {
 /// Loop 1: 7 iterations, scale 2.2/1024, w starts 0.4 *0.6, n*w summed (no abs).
 /// Loop 2: 7 iterations, scale 3.3/1024, w starts 0.4 *0.6, |n*w| summed.
 /// Returns sum1 + sum2.
+#[inline(never)]
 pub fn noise_b(x: i32, y: i32) -> f32 {
     // loop 1
-    let xf = (x as f32) * 2.2f32 * 0.0009765625f32;
-    let yf = (y as f32) * 2.2f32 * 0.0009765625f32;
+    let mut xf = (x as f32) * 2.2f32 * 0.0009765625f32;
+    let mut yf = (y as f32) * 2.2f32 * 0.0009765625f32;
     let mut sum1 = 0.0f32;
     let mut w = 0.4f32;
     let mut xx = xf;
@@ -164,8 +175,8 @@ pub fn noise_b(x: i32, y: i32) -> f32 {
     }
 
     // loop 2
-    let xf = (x as f32) * 3.3000002f32 * 0.0009765625f32;
-    let yf = (y as f32) * 3.3000002f32 * 0.0009765625f32;
+    let mut xf = (x as f32) * 3.3000002f32 * 0.0009765625f32;
+    let mut yf = (y as f32) * 3.3000002f32 * 0.0009765625f32;
     let mut sum2 = 0.0f32;
     let mut w = 0.4f32;
     let mut xx = xf;
