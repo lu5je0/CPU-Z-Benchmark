@@ -26,7 +26,24 @@ pub enum Engine {
     /// 17.01 SSE (default benchmark version)
     V1701,
     /// 19.01 SSE
-    V1901,
+    V1901Sse,
+    /// 19.01 AVX2 (8 lanes)
+    V1901Avx2,
+}
+
+impl Engine {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Engine::V1701 => "17.01",
+            Engine::V1901Sse => "19.01",
+            Engine::V1901Avx2 => "19.01-AVX2",
+        }
+    }
+
+    /// Whether the score formula divides by 10 (all 19.01 variants).
+    pub fn div10(&self) -> bool {
+        matches!(self, Engine::V1901Sse | Engine::V1901Avx2)
+    }
 }
 
 #[inline(always)]
@@ -48,10 +65,16 @@ pub fn pixel(engine: Engine, x: i32, y: i32) -> [u8; 4] {
             crate::noise::noise_a(x, y),
             crate::noise::noise_b(x, y),
         ),
-        Engine::V1901 => (
+        Engine::V1901Sse => (
             crate::noise1901::noise_a(x, y),
             crate::noise1901::noise_b(x, y),
         ),
+        Engine::V1901Avx2 => unsafe {
+            (
+                crate::noise_avx2::noise_a(x, y),
+                crate::noise_avx2::noise_b(x, y),
+            )
+        },
     };
 
     let v15 = clamp01(n2 * 0.60000002 + 0.5);
@@ -106,9 +129,10 @@ mod tests {
 
     #[test]
     fn alpha_always_ff() {
-        for &(x, y) in &[(0, 0), (1, 1), (1023, 1023)] {
-            assert_eq!(pixel(Engine::V1701, x, y)[3], 0xFF);
-            assert_eq!(pixel(Engine::V1901, x, y)[3], 0xFF);
+        for e in [Engine::V1701, Engine::V1901Sse, Engine::V1901Avx2] {
+            for &(x, y) in &[(0, 0), (1, 1), (1023, 1023)] {
+                assert_eq!(pixel(e, x, y)[3], 0xFF);
+            }
         }
     }
 }

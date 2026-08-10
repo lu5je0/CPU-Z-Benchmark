@@ -145,7 +145,8 @@ fn worker_loop(w: Arc<Worker>) {
         }
         let engine = match w.engine.load(Ordering::Acquire) {
             0 => Engine::V1701,
-            _ => Engine::V1901,
+            1 => Engine::V1901Sse,
+            _ => Engine::V1901Avx2,
         };
         let x0 = w.x0.load(Ordering::Acquire);
         let y0 = w.y0.load(Ordering::Acquire);
@@ -155,7 +156,14 @@ fn worker_loop(w: Arc<Worker>) {
 
         // SAFETY: rows [row0, row0+rows) belong exclusively to this job.
         let buf = unsafe { std::slice::from_raw_parts_mut(w.buf.ptr, w.buf.len) };
-        render_rows(engine, buf, x0, y0, row0, rows, width, BENCH_WIDTH * 4);
+        match engine {
+            Engine::V1901Avx2 => unsafe {
+                crate::noise_avx2::render_rows_avx2(buf, x0, y0, row0, rows, width, BENCH_WIDTH * 4);
+            },
+            _ => {
+                render_rows(engine, buf, x0, y0, row0, rows, width, BENCH_WIDTH * 4);
+            }
+        }
         w.units.store((rows * width) as u32, Ordering::Release);
         w.busy.store(false, Ordering::Release);
     }
@@ -212,7 +220,7 @@ fn make_job(engine: Engine, iter: &mut i32, row: &mut usize) -> Job {
             }
             job
         }
-        Engine::V1901 => {
+        Engine::V1901Sse | Engine::V1901Avx2 => {
             // row0 = v14 advances by height/8, wraps at height; iter = v15
             let rpj = BENCH_HEIGHT / 8;
             let r = rpj.min(BENCH_HEIGHT - *row);
@@ -324,9 +332,10 @@ fn score_of(engine: Engine, units: u64, ms: u64) -> f32 {
         return 0.0;
     }
     let base = units as f32 / ms as f32;
-    match engine {
-        Engine::V1701 => base,
-        Engine::V1901 => base / 10.0,
+    if engine.div10() {
+        base / 10.0
+    } else {
+        base
     }
 }
 

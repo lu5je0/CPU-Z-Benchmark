@@ -10,7 +10,11 @@ fn usage() -> ! {
 Usage: cpuz-bench [options]
 
 Options:
-  --mode <mode>     Benchmark mode: 17.01 (default) | 19.01-sse
+  --mode <mode>     Benchmark mode:
+                      17.01        (default, SSE)
+                      19.01-sse    19.01 SSE
+                      19.01-avx2   19.01 AVX2 (requires AVX2 CPU)
+                      19.01-avx512 19.01 AVX512 (requires AVX-512 CPU)
   --duration <ms>   Test duration per pass (default 10000)
   --single-only     Run only the single-thread pass
   --multi-only      Run only the multi-thread pass
@@ -34,7 +38,12 @@ fn parse_args() -> BenchOptions {
                 }
                 opts.engine = match args[i].as_str() {
                     "17.01" => Engine::V1701,
-                    "19.01-sse" | "19.01" => Engine::V1901,
+                    "19.01-sse" | "19.01" => Engine::V1901Sse,
+                    "19.01-avx2" => Engine::V1901Avx2,
+                    "19.01-avx512" => {
+                        eprintln!("note: 19.01-avx512 not implemented yet, using AVX2");
+                        Engine::V1901Avx2
+                    }
                     other => {
                         eprintln!("unknown mode: {}", other);
                         usage();
@@ -98,10 +107,7 @@ fn report(name: &str, r: &BenchResult) {
 
 fn main() {
     let opts = parse_args();
-    let name = match opts.engine {
-        Engine::V1701 => "17.01",
-        Engine::V1901 => "19.01",
-    };
+    let name = opts.engine.name();
     println!(
         "Running {} benchmark: {} ms/pass, {} worker threads",
         name,
