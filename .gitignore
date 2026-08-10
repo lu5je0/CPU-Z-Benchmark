@@ -1,0 +1,27 @@
+# Reverse engineering artifacts - NEVER commit
+*.i64
+*.idb
+*.id0
+*.id1
+*.nam
+*.til
+*.exe
+*.dll
+*.sys
+*.pdb
+.ida-mcp/
+dump*.py
+cols*.txt
+consts*.txt
+c2.txt
+
+# Rust
+/target
+Cargo.lock
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+.DS_Store
