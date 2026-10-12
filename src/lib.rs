@@ -11,4 +11,7 @@ pub mod noise_avx2;
 /// aarch64-only: run CPU-Z's own ARM64 kernel (needs the user's cpuz_arm64.exe).
 #[cfg(target_arch = "aarch64")]
 pub mod official;
+/// x86_64-only: run CPU-Z's own x64 kernel (needs the user's cpuz_x64.exe).
+#[cfg(target_arch = "x86_64")]
+pub mod official_x64;
 pub mod table;

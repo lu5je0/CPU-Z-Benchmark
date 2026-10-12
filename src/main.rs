@@ -14,13 +14,17 @@ use cpuz_bench::kernel::Engine;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const BAR_WIDTH: usize = 24;
 
-/// On x86_64 this crate reproduces CPU-Z's own numbers (872 vs 872 on an
-/// i7-13700KF against the published leaderboard), so there is nothing to
-/// gain from running CPUID's binary. On aarch64 the replica is an LLVM build
-/// of a verified-identical algorithm but runs measurably faster than CPUID's
-/// MSVC build, so the CLI prefers the official kernel when it is available.
+/// On aarch64 the replica is an LLVM build of a verified-identical algorithm
+/// but runs measurably faster than CPUID's MSVC build, so the CLI prefers the
+/// official kernel when it is available. On x86_64 the replica already
+/// reproduces CPU-Z's published scores, but CPUID's own kernel is still the
+/// ground truth, so it is preferred there too when the user has an exe.
 #[cfg(target_arch = "x86_64")]
-const PLATFORM_NOTE: Option<&str> = None;
+const PLATFORM_NOTE: Option<&str> = Some(
+    "Note: x86_64 built-in engine — this crate reproduces CPU-Z's published scores,\n        \
+     but --official <cpuz_x64.exe> (or $CPUZ_X64_EXE / the cache) scores with\n        \
+     CPUID's own kernel instead.",
+);
 #[cfg(target_arch = "aarch64")]
 const PLATFORM_NOTE: Option<&str> = Some(
     "Note: aarch64 build — this crate's LLVM build renders the same, verified-identical\n        \
@@ -63,13 +67,14 @@ Options:
                        19.01-avx512 19.01 AVX512 (falls back to AVX2)
   --duration <ms>    Test duration per pass (default 10000)
   --interval <ms>    Live panel repaint interval (default 100, 0 = off)
-  --batch-rows <n>   Rows per dispatched job (default: single 8, multi 16)
+  --batch-rows <n>   Rows per dispatched job (default: single 1, multi 8)
   --threads <n>      Worker threads for the multi-thread pass (default: all CPUs)
   --single-only      Run only the single-thread pass
   --multi-only       Run only the multi-thread pass
-  --official <path>  aarch64 only: score with CPUID's own cpuz_arm64.exe kernel
-                     (default: $CPUZ_ARM64_EXE, else the shared cache path)
-  --no-official      aarch64 only: always use the built-in engine
+  --official <path>  Score with CPUID's own kernel instead of this crate's:
+                     cpuz_arm64.exe on aarch64, cpuz_x64.exe on x86_64
+                     (default: $CPUZ_ARM64_EXE / $CPUZ_X64_EXE, else the cache)
+  --no-official      Always use the built-in engine
   --compare          Also run the built-in engine and print the difference
   --no-live          Disable the live score panel
   --json             Machine readable output
@@ -525,6 +530,87 @@ fn run_official(cli: &Cli) -> Result<(), Option<String>> {
     Ok(())
 }
 
+#[cfg(target_arch = "x86_64")]
+fn run_official(cli: &Cli) -> Result<(), Option<String>> {
+    use cpuz_bench::official_x64;
+
+    // CPUID's x64 build carries one kernel for each benchmark version; we have
+    // only mapped 17.01, so anything else stays on the built-in engine.
+    if cli.bench.engine != Engine::V1701 {
+        eprintln!(
+            "cpuz-bench: the official x64 kernel implements 17.01 only; \
+             using the built-in engine for {}",
+            cli.bench.engine.name()
+        );
+        return Err(None);
+    }
+
+    // Only complain about a missing executable when the user actually asked for
+    // one; otherwise the header/README note is explanation enough.
+    let explicit = cli.official_path.is_some() || std::env::var_os("CPUZ_X64_EXE").is_some();
+    let path = match official_x64::locate(cli.official_path.as_deref()) {
+        Some(p) => p,
+        None if !explicit => return Err(None),
+        None => {
+            return Err(Some(format!(
+                "cpuz_x64.exe not found — download the CPU-Z archive\n        \
+                 https://download.cpuid.com/cpu-z/cpu-z_3.01-en.zip\n        \
+                 and put cpuz_x64.exe at {} or point CPUZ_X64_EXE at it",
+                official_x64::default_cache_path().display()
+            )))
+        }
+    };
+    let kernel = official_x64::Kernel::load(&path).map_err(Some)?;
+
+    let source = format!(
+        "official cpuz_x64.exe {} kernel ({})",
+        kernel.version,
+        path.display()
+    );
+    print_header(cli, &source, false);
+
+    let mut panel = Panel::new();
+    let live = cli.live;
+    let mut sink = |p: Progress| {
+        if live {
+            panel.show(&p);
+        }
+    };
+    let result = official_x64::run(&kernel, &cli.bench, &mut sink);
+    if cli.live {
+        println!();
+    }
+
+    let replica = if cli.compare {
+        let mut silent = |_: Progress| {};
+        Some(run(&cli.bench, &mut silent))
+    } else {
+        None
+    };
+    print_report(cli, &result, "official", replica.as_ref());
+    Ok(())
+}
+
+/// Run the official kernel when requested; report a failure and fall back
+/// otherwise. Returns true when the official pass already produced the report.
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+fn try_official(cli: &Cli) -> bool {
+    match run_official(cli) {
+        Ok(()) => true,
+        Err(None) => false,
+        Err(Some(err)) => {
+            for line in err.lines() {
+                eprintln!("cpuz-bench: {line}");
+            }
+            eprintln!("cpuz-bench: falling back to the built-in engine");
+            if !cli.quiet && !cli.json {
+                eprintln!();
+            }
+            false
+        }
+    }
+}
+
 fn run_replica(cli: &Cli) {
     print_header(cli, "built-in engine (this crate, LLVM build)", true);
 
@@ -552,31 +638,18 @@ fn main() {
         }
     };
 
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
     if cli.official_path.is_some() {
         eprintln!(
-            "cpuz-bench: --official runs CPUID's Windows ARM64 kernel, so it is only\n            \
-             available on aarch64. On x86_64 the built-in engine already matches\n            \
-             CPU-Z's published scores."
+            "cpuz-bench: --official runs CPUID's own kernel and is only available on\n            \
+             aarch64 (cpuz_arm64.exe) and x86_64 (cpuz_x64.exe)."
         );
         std::process::exit(2);
     }
 
-    #[cfg(target_arch = "aarch64")]
-    if cli.use_official {
-        match run_official(&cli) {
-            Ok(()) => return,
-            Err(None) => {}
-            Err(Some(err)) => {
-                for line in err.lines() {
-                    eprintln!("cpuz-bench: {line}");
-                }
-                eprintln!("cpuz-bench: falling back to the built-in engine");
-                if !cli.quiet && !cli.json {
-                    eprintln!();
-                }
-            }
-        }
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+    if cli.use_official && try_official(&cli) {
+        return;
     }
 
     run_replica(&cli);
