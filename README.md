@@ -13,7 +13,7 @@ TTY 下运行时先出现单线程、再多线程，分数从第一次采样（2
 之后小幅抖动到定稿——不会从低往高慢慢爬：
 
 ```
-cpuz-bench 0.2.3 - CPU-Z benchmark (17.01)
+cpuz-bench 0.2.4 - CPU-Z benchmark (17.01)
 CPU      : 13th Gen Intel(R) Core(TM) i7-13700KF
 Settings : 24 threads, 10000 ms/pass, batch 8 rows, live score
 
@@ -138,6 +138,34 @@ cargo build --release
 ```
 
 完整选项见 `cpuz-bench --help`。
+
+### ARM64：默认用官方内核计分
+
+在 aarch64 上（Apple Silicon / ARM Linux），如果手上没官方 `cpuz_arm64.exe`，跑出来的是我们自己的
+LLVM 构建，它比 CPUID 的 MSVC 构建快，因此**不是 CPU-Z 会显示的分**。所以 CLI 在 aarch64 上会优先找
+官方 exe 并用它计分，找不到才回退到内置引擎（并在开头打提示）：
+
+```bash
+# 默认：按顺序找 --official 的路径 -> $CPUZ_ARM64_EXE -> 缓存路径
+#   ${XDG_CACHE_HOME:-~/.cache}/cpuz-benchmark/cpuz_arm64.exe
+./target/release/cpuz-bench
+
+# 显式指定
+export CPUZ_ARM64_EXE=/path/to/cpuz_arm64.exe
+./target/release/cpuz-bench                     # Source: official cpuz_arm64.exe v1.06 kernel
+./target/release/cpuz-bench --official /path/to/cpuz_arm64.exe
+
+# 顺便跑一遍我们自己的引擎，看差多少
+./target/release/cpuz-bench --compare
+#   This crate (LLVM)   :     1793 / +14.6%   and    21080 / +21.1%
+
+# 强制只用内置引擎
+./target/release/cpuz-bench --no-official
+```
+
+官方 exe 从 <https://download.cpuid.com/cpu-z/arm64/cpuz-arm64_1.06.zip> 获取（本仓库不分发它）。
+v1.05 和 v1.06 都支持（用常量池签名定位，不依赖固定地址）。x86_64 上不需要：那边内置引擎已经与官方
+分数逐分对齐，`--official` 会直接报错。
 
 ## 实现结构
 

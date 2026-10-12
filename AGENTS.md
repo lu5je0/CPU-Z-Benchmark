@@ -111,11 +111,21 @@ cargo run --release -- --duration 3000 -q --json     # 脚本/CI 用输出
 复现：
 
 ```sh
+# aarch64 上 CLI 默认就走官方内核（找不到 exe 才回退并打提示）
+cpuz-bench --duration 3000              # Source: official cpuz_arm64.exe v1.06 kernel
+cpuz-bench --duration 3000 --compare    # 顺带跑我们自己的引擎并打差值
+cpuz-bench --no-official                # 强制内置引擎
+
+# 单独的对拍工具（C，不依赖本 crate）
 clang -O2 -o /tmp/oak scripts/official_arm64_kernel.c -lm -lpthread
 /tmp/oak /path/to/cpuz_arm64.exe -            # 单核 + 全核分数（第 3 个参数可指定线程数）
 /tmp/oak /path/to/cpuz_arm64.exe /tmp/official.raw 1   # 单核，并 dump 一帧到文件
-./target/release/cpuz-bench --duration 3000 -q         # 我们这边同口径对比
+./target/release/cpuz-bench --no-official --duration 3000 -q   # 我们这边同口径对比
 ```
+
+官方 exe 的查找顺序：`--official <path>` → `$CPUZ_ARM64_EXE` →
+`${XDG_CACHE_HOME:-~/.cache}/cpuz-benchmark/cpuz_arm64.exe`（`q-cpuz-benchmark` 会把它放那里）。
+`src/official.rs` 用常量池签名定位内核，不依赖固定地址，v1.05 / v1.06 都支持。
 
 ## 提交约定
 

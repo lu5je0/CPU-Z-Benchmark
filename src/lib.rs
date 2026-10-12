@@ -8,4 +8,7 @@ pub mod noise1901;
 /// engine (see `kernel::pixel` / `bench::worker_loop`).
 #[cfg(target_arch = "x86_64")]
 pub mod noise_avx2;
+/// aarch64-only: run CPU-Z's own ARM64 kernel (needs the user's cpuz_arm64.exe).
+#[cfg(target_arch = "aarch64")]
+pub mod official;
 pub mod table;

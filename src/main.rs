@@ -6,6 +6,7 @@
 
 use std::env;
 use std::io::{IsTerminal, Write};
+use std::path::PathBuf;
 
 use cpuz_bench::bench::{run, BenchOptions, BenchResult, Pass, Progress};
 use cpuz_bench::kernel::Engine;
@@ -13,12 +14,21 @@ use cpuz_bench::kernel::Engine;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const BAR_WIDTH: usize = 24;
 
-/// CPU-Z 17.01 is an x86 SSE scalar workload. On other architectures the same
-/// source compiles to NEON/etc. and the score is not comparable to CPU-Z's x86
-/// reference numbers (there is no official CPU-Z benchmark for this platform).
+/// On x86_64 this crate reproduces CPU-Z's own numbers (872 vs 872 on an
+/// i7-13700KF against the published leaderboard), so there is nothing to
+/// gain from running CPUID's binary. On aarch64 the replica is an LLVM build
+/// of a verified-identical algorithm but runs measurably faster than CPUID's
+/// MSVC build, so the CLI prefers the official kernel when it is available.
 #[cfg(target_arch = "x86_64")]
 const PLATFORM_NOTE: Option<&str> = None;
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(target_arch = "aarch64")]
+const PLATFORM_NOTE: Option<&str> = Some(
+    "Note: aarch64 build — this crate's LLVM build renders the same, verified-identical\n        \
+     kernel but runs faster than CPUID's MSVC build, so the replica score is not the\n        \
+     score CPU-Z reports. Pass --official <cpuz_arm64.exe> (or put the file in the\n        \
+     cache / set CPUZ_ARM64_EXE) to score with CPU-Z's own code.",
+);
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 const PLATFORM_NOTE: Option<&str> = Some(
     "Note: non-x86 build — 17.01 is an x86 SSE scalar workload, so this score is\n        \
      not comparable to CPU-Z's x86 reference scores.",
@@ -30,6 +40,12 @@ struct Cli {
     quiet: bool,
     live: bool,
     cpu: String,
+    /// `--official <path>`: run CPUID's own ARM64 kernel instead of ours.
+    official_path: Option<PathBuf>,
+    /// `--no-official`: always use the built-in engine.
+    use_official: bool,
+    /// `--compare`: also run the built-in engine and print the delta.
+    compare: bool,
 }
 
 fn usage(out: &mut dyn Write) {
@@ -51,6 +67,10 @@ Options:
   --threads <n>      Worker threads for the multi-thread pass (default: all CPUs)
   --single-only      Run only the single-thread pass
   --multi-only       Run only the multi-thread pass
+  --official <path>  aarch64 only: score with CPUID's own cpuz_arm64.exe kernel
+                     (default: $CPUZ_ARM64_EXE, else the shared cache path)
+  --no-official      aarch64 only: always use the built-in engine
+  --compare          Also run the built-in engine and print the difference
   --no-live          Disable the live score panel
   --json             Machine readable output
   -q, --quiet        Only print the score lines
@@ -70,6 +90,9 @@ fn parse_args() -> Result<Cli, ()> {
     let mut live = std::io::stdout().is_terminal();
     let mut batch_single: Option<usize> = None;
     let mut batch_multi: Option<usize> = None;
+    let mut official_path: Option<PathBuf> = None;
+    let mut use_official = true;
+    let mut compare = false;
 
     let args: Vec<String> = env::args().skip(1).collect();
     let mut i = 0;
@@ -126,6 +149,16 @@ fn parse_args() -> Result<Cli, ()> {
             }
             "--single-only" => opts.run_multi = false,
             "--multi-only" => opts.run_single = false,
+            "--official" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("--official needs the path to cpuz_arm64.exe");
+                    return Err(());
+                }
+                official_path = Some(PathBuf::from(&args[i]));
+            }
+            "--no-official" => use_official = false,
+            "--compare" => compare = true,
             "--no-live" => live = false,
             "--json" => json = true,
             "-q" | "--quiet" => quiet = true,
@@ -161,6 +194,9 @@ fn parse_args() -> Result<Cli, ()> {
         quiet,
         live,
         cpu: cpu_name(),
+        official_path,
+        use_official,
+        compare,
     })
 }
 
@@ -269,7 +305,40 @@ fn row_line(label: &str, score: Option<f32>, active: Option<&Progress>) -> Strin
     )
 }
 
-fn print_report(cli: &Cli, result: &BenchResult) {
+fn print_header(cli: &Cli, source: &str, show_platform_note: bool) {
+    if cli.json || cli.quiet {
+        return;
+    }
+    println!(
+        "cpuz-bench {VERSION} - CPU-Z benchmark ({})",
+        cli.bench.engine.name()
+    );
+    println!("CPU      : {}", cli.cpu);
+    println!("Source   : {source}");
+    println!(
+        "Settings : {} threads, {} ms/pass, batch {}/{} rows{}",
+        cli.bench.threads,
+        cli.bench.duration_ms,
+        cli.bench.batch_rows_single,
+        cli.bench.batch_rows_multi,
+        if cli.live { ", live score" } else { "" }
+    );
+    if show_platform_note {
+        if let Some(note) = PLATFORM_NOTE {
+            println!("{note}");
+        }
+    }
+    println!();
+}
+
+fn delta(ours: f32, reference: f32) -> String {
+    if reference <= 0.0 {
+        return "n/a".to_string();
+    }
+    format!("{:+.1}%", (ours - reference) / reference * 100.0)
+}
+
+fn print_report(cli: &Cli, result: &BenchResult, source: &str, replica: Option<&BenchResult>) {
     let mode = cli.bench.engine.name();
     let score = |v: f32| format!("{v:.0}");
 
@@ -278,6 +347,7 @@ fn print_report(cli: &Cli, result: &BenchResult) {
         println!("  \"mode\": \"{mode}\",");
         println!("  \"cpu\": \"{}\",", cli.cpu);
         println!("  \"arch\": \"{}\",", env::consts::ARCH);
+        println!("  \"source\": \"{source}\",");
         println!("  \"duration_ms\": {},", cli.bench.duration_ms);
         match &result.single {
             Some(r) => println!(
@@ -290,13 +360,21 @@ fn print_report(cli: &Cli, result: &BenchResult) {
         }
         match &result.multi {
             Some(r) => println!(
-                "  \"multi\": {{\"score\": {}, \"units\": {}, \"ms\": {}, \"threads\": {}}}",
+                "  \"multi\": {{\"score\": {}, \"units\": {}, \"ms\": {}, \"threads\": {}}},",
                 score(r.score),
                 r.units,
                 r.ms,
                 r.threads
             ),
-            None => println!("  \"multi\": null"),
+            None => println!("  \"multi\": null,"),
+        }
+        match replica {
+            None => println!("  \"replica\": null"),
+            Some(rep) => {
+                let s = rep.single.as_ref().map(|r| score(r.score)).unwrap_or_else(|| "null".into());
+                let m = rep.multi.as_ref().map(|r| score(r.score)).unwrap_or_else(|| "null".into());
+                println!("  \"replica\": {{\"single\": {s}, \"multi\": {m}}}");
+            }
         }
         println!("}}");
         return;
@@ -313,13 +391,14 @@ fn print_report(cli: &Cli, result: &BenchResult) {
     }
 
     println!("=== CPU-Z Benchmark ({mode}) ===");
-    if let Some(note) = PLATFORM_NOTE {
-        println!("Note: non-x86 build, see --help; not comparable to CPU-Z x86 scores.");
-        let _ = note;
-    }
+    let source_line = if source == "official" {
+        "official kernel"
+    } else {
+        "built-in engine"
+    };
     if let Some(r) = &result.single {
         println!(
-            "CPU (Single Thread) : {:>8}   ({} px in {} ms)",
+            "CPU (Single Thread) : {:>8}   ({} px in {} ms, {source_line})",
             score(r.score),
             r.units,
             r.ms
@@ -327,43 +406,83 @@ fn print_report(cli: &Cli, result: &BenchResult) {
     }
     if let Some(r) = &result.multi {
         println!(
-            "CPU (Multi Thread)  : {:>8}   ({} px in {} ms, {} threads)",
+            "CPU (Multi Thread)  : {:>8}   ({} px in {} ms, {} threads, {source_line})",
             score(r.score),
             r.units,
             r.ms,
             r.threads
         );
     }
+    if let Some(rep) = replica {
+        let s = rep
+            .single
+            .as_ref()
+            .map(|r| (score(r.score), delta(r.score, result.single_score())))
+            .unwrap_or_else(|| ("-".into(), "-".into()));
+        let m = rep
+            .multi
+            .as_ref()
+            .map(|r| (score(r.score), delta(r.score, result.multi_score())))
+            .unwrap_or_else(|| ("-".into(), "-".into()));
+        println!(
+            "This crate (LLVM)   : {:>8} / {:>6}   and {:>8} / {:>6}",
+            s.0, s.1, m.0, m.1
+        );
+    }
 }
 
-fn main() {
-    let cli = match parse_args() {
-        Ok(cli) => cli,
-        Err(_) => {
-            usage(&mut std::io::stderr());
-            std::process::exit(2);
+#[cfg(target_arch = "aarch64")]
+fn run_official(cli: &Cli) -> Result<(), Option<String>> {
+    use cpuz_bench::official;
+
+    // Only complain about a missing executable when the user actually asked for
+    // one; otherwise the header/README note is explanation enough.
+    let explicit = cli.official_path.is_some() || std::env::var_os("CPUZ_ARM64_EXE").is_some();
+    let path = match official::locate(cli.official_path.as_deref()) {
+        Some(p) => p,
+        None if !explicit => return Err(None),
+        None => {
+            return Err(Some(format!(
+                "cpuz_arm64.exe not found — download\n        \
+                 https://download.cpuid.com/cpu-z/arm64/cpuz-arm64_1.06.zip\n        \
+                 and put the exe at {} or point CPUZ_ARM64_EXE at it",
+                official::default_cache_path().display()
+            )))
         }
     };
+    let kernel = official::Kernel::load(&path).map_err(Some)?;
 
-    if !cli.json && !cli.quiet {
-        println!(
-            "cpuz-bench {VERSION} - CPU-Z benchmark ({})",
-            cli.bench.engine.name()
-        );
-        println!("CPU      : {}", cli.cpu);
-        println!(
-            "Settings : {} threads, {} ms/pass, batch {}/{} rows{}",
-            cli.bench.threads,
-            cli.bench.duration_ms,
-            cli.bench.batch_rows_single,
-            cli.bench.batch_rows_multi,
-            if cli.live { ", live score" } else { "" }
-        );
-        if let Some(note) = PLATFORM_NOTE {
-            println!("{note}");
+    let source = format!(
+        "official cpuz_arm64.exe {} kernel ({})",
+        kernel.version,
+        path.display()
+    );
+    print_header(cli, &source, false);
+
+    let mut panel = Panel::new();
+    let live = cli.live;
+    let mut sink = |p: Progress| {
+        if live {
+            panel.show(&p);
         }
+    };
+    let result = official::run(&kernel, &cli.bench, &mut sink);
+    if cli.live {
         println!();
     }
+
+    let replica = if cli.compare {
+        let mut silent = |_: Progress| {};
+        Some(run(&cli.bench, &mut silent))
+    } else {
+        None
+    };
+    print_report(cli, &result, "official", replica.as_ref());
+    Ok(())
+}
+
+fn run_replica(cli: &Cli) {
+    print_header(cli, "built-in engine (this crate, LLVM build)", true);
 
     let mut panel = Panel::new();
     let live = cli.live;
@@ -377,5 +496,44 @@ fn main() {
     if cli.live {
         println!();
     }
-    print_report(&cli, &result);
+    print_report(cli, &result, "builtin", None);
+}
+
+fn main() {
+    let cli = match parse_args() {
+        Ok(cli) => cli,
+        Err(_) => {
+            usage(&mut std::io::stderr());
+            std::process::exit(2);
+        }
+    };
+
+    #[cfg(not(target_arch = "aarch64"))]
+    if cli.official_path.is_some() {
+        eprintln!(
+            "cpuz-bench: --official runs CPUID's Windows ARM64 kernel, so it is only\n            \
+             available on aarch64. On x86_64 the built-in engine already matches\n            \
+             CPU-Z's published scores."
+        );
+        std::process::exit(2);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    if cli.use_official {
+        match run_official(&cli) {
+            Ok(()) => return,
+            Err(None) => {}
+            Err(Some(err)) => {
+                for line in err.lines() {
+                    eprintln!("cpuz-bench: {line}");
+                }
+                eprintln!("cpuz-bench: falling back to the built-in engine");
+                if !cli.quiet && !cli.json {
+                    eprintln!();
+                }
+            }
+        }
+    }
+
+    run_replica(&cli);
 }
