@@ -360,7 +360,7 @@ impl Default for BenchOptions {
             threads: std::thread::available_parallelism()
                 .map(|n| n.get())
                 .unwrap_or(4),
-            report_interval_ms: 200,
+            report_interval_ms: 100,
             batch_rows_single: DEFAULT_BATCH_ROWS_SINGLE,
             batch_rows_multi: DEFAULT_BATCH_ROWS_MULTI,
         }

@@ -51,7 +51,7 @@ cargo run --release -- --duration 3000 -q --json     # 脚本/CI 用输出
 
 ### 实时分数（滑动窗口）
 
-- `LiveWindow`：每 `--interval`（默认 200ms）存一个 `(elapsed_ms, units)`，左边界取
+- `LiveWindow`：每 `--interval`（默认 100ms）存一个 `(elapsed_ms, units)`，左边界取
   “窗口宽 ≈ pass/4（250~1000ms）之外最近的样本”，分数 = 窗口内 `Δunits/Δms`
 - 为啥这么做：用“从开头累积的 `units/ms`”会让数字从低往高慢慢爬（早期受 CPU 升频/缺页影响），
   用户明确说过不像 CPU-Z；滑动窗口从第一个采样就是稳态值，然后小幅抖动到定稿

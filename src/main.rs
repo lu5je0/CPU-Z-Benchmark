@@ -62,7 +62,7 @@ Options:
                        19.01-avx2   19.01 AVX2 (requires AVX2 CPU)
                        19.01-avx512 19.01 AVX512 (falls back to AVX2)
   --duration <ms>    Test duration per pass (default 10000)
-  --interval <ms>    Live score sampling interval (default 200, 0 = off)
+  --interval <ms>    Live panel repaint interval (default 100, 0 = off)
   --batch-rows <n>   Rows per dispatched job (default: single 8, multi 16)
   --threads <n>      Worker threads for the multi-thread pass (default: all CPUs)
   --single-only      Run only the single-thread pass
@@ -231,13 +231,16 @@ fn cpu_name() -> String {
 /// Two-line live panel, updated in place on a TTY.
 /// Ookla's transfer bar spins `-`, `\`, `|`, `/` at the head of the fill.
 const SPINNER: [char; 4] = ['-', '\\', '|', '/'];
+/// How long each spinner frame lasts. speedtest advances its spinner once per
+/// progress repaint (~10 Hz); driving ours off the clock keeps the rotation at
+/// that rate even when the panel is repainted less often than that.
+const SPIN_MS: u64 = 100;
 
 struct Panel {
     single: Option<f32>,
     multi: Option<f32>,
     lines: usize,
-    /// Redraw counter; advances the spinner.
-    frame: usize,
+    started: std::time::Instant,
 }
 
 impl Panel {
@@ -246,7 +249,7 @@ impl Panel {
             single: None,
             multi: None,
             lines: 0,
-            frame: 0,
+            started: std::time::Instant::now(),
         }
     }
 
@@ -256,8 +259,8 @@ impl Panel {
             Pass::Multi => self.multi = Some(p.score),
         }
 
-        let spin = SPINNER[self.frame % SPINNER.len()];
-        self.frame = self.frame.wrapping_add(1);
+        let frame = (self.started.elapsed().as_millis() as u64 / SPIN_MS) as usize;
+        let spin = SPINNER[frame % SPINNER.len()];
 
         let line1 = row_line(
             "Single Thread",

@@ -25,7 +25,7 @@ CPU (Single Thread) :      872   (8724480 px in 10004 ms)
 CPU (Multi Thread)  :    12665   (126746624 px in 10005 ms, 24 threads)
 ```
 
-显示的是**最近约 1/4 pass 时长的瞬时速率**（`--interval` 控制采样间隔，默认 200ms），
+显示的是**最近约 1/4 pass 时长的瞬时速率**（`--interval` 控制重绘间隔，默认 100ms），
 所以一开始就是稳态值；每个 pass 结束时打印的仍是整段平均 `units/ms`（与 CPU-Z 一致）。
 
 非 TTY（管道/重定向）时不会画面板，只在结束时输出结果；`--json` / `-q` 同样不发面板。
@@ -127,7 +127,7 @@ cargo build --release
 ./target/release/cpuz-bench --single-only
 ./target/release/cpuz-bench --multi-only
 
-# 指定测试时长（毫秒，默认 10000）与实时刷新间隔（默认 200ms）
+# 指定测试时长（毫秒，默认 10000）与实时刷新间隔（默认 100ms）
 ./target/release/cpuz-bench --duration 5000 --interval 100
 
 # 机器可读输出（适合脚本/CI）
