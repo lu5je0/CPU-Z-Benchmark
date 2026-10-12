@@ -232,12 +232,6 @@ Termux 的目标 SDK 足够低，原生 Termux 里 JIT 是可用的；但如果�
 - **分数只在同机同架构内可比。** 这是标量 AArch64 工作负载，不是 CPU-Z 给 x86 的那张榜。
 - `src/affinity.rs` 在 Android 上也走 `sched_setaffinity`，每个 worker 绑一个逻辑核；
   大小核手机上不绑的话调度器会把几个 worker 塞到同一个核上，多线程分会崩。
-- **单线程 pass 在 Android 上绑“最快的可达核”，不是 CPU 0**：手机内核把最快的簇编在最后
-  （骁龙 8E5 的 cpu0~5 是 3.63GHz 性能核，cpu6/7 才是 4.74GHz prime），照搬桌面那套绑 CPU 0
-  会实打实少记 ~25% 的单核分。读 `cpufreq/cpuinfo_max_freq` 挑最高的，并先过一遍
-  `sched_getaffinity`：Android 的 cpuset cgroup 可能把 prime 簇对 app 整个藏掉，
-  那种情况软件无解（绑不过去），分数就只能是性能核的水平。其他平台仍然保持 CPU-Z 的 CPU 0
-  （x86/Apple Silicon 已验证的分数都是在那上面测的）。
 - 内置引擎的 aarch64 构建沿用 `.cargo/config.toml` 里的标量配置（Termux 的
   `aarch64-linux-android` 目标已加入），否则 LLVM 的 SLP 会把它向量化、单核虚高到 ~2300。
 - CPU 名识别：`/proc/cpuinfo` 在部分厂商 ROM 上被裁剪，会再试 `getprop ro.soc.model` /
