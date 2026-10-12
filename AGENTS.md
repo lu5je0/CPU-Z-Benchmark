@@ -63,6 +63,12 @@ cargo run --release -- --duration 3000 -q --json     # 脚本/CI 用输出
 - 运行 CPU-Z 验证分数时：其下拉框版本对应 `--mode`（17.01 SSE / 19.01 SSE / 19.01 AVX2），AVX512 用 AVX2 回退
 - 本机 CPU 是 16C/24T Intel 大小核：E-core 拖累多线程扩展，比较分数需固定同机
 - CI/release 矩阵：`ubuntu-latest`(x86_64)、`ubuntu-24.04-arm`(aarch64)、`macos-14`(aarch64)
+- **只有 x86_64 分数能跟 CPU-Z 榜单比**。实测 M5 Pro 单核 2323 / 多核 26652（NEON，同机 13700KF 是 868/12495）：
+  这是长依赖链标量浮点负载，苹果核在延迟/OoO 窗口上优势极大，不代表主流基准里的 1.4~1.5x 单核差距。
+  非 x86 构建会在输出里打提示（`PLATFORM_NOTE`，按 `target_arch` cfg）
+- **不要为了“跨平台更可比”去开 FMA / `target-cpu=native`**：rustc 默认就是 `fp-contract=off`
+  （实测：`-C target-feature=+fma` 下只生成 `vmulss`+`vaddss`），两边都是逐次 mul/add；
+  一旦开了收缩/自动向量化，分数就不再是 CPU-Z 那套逐次 SSE 标量运算了
 
 ## 提交约定
 
