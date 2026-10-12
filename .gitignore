@@ -19,6 +19,9 @@ c2.txt
 /target
 Cargo.lock
 
+# pi agent session state (task logs, transcripts)
+.pi/
+
 # Editor / OS
 .vscode/
 .idea/
