@@ -287,9 +287,11 @@ fn row_line(label: &str, score: Option<f32>, active: Option<&Progress>) -> Strin
     };
 
     let filled = (fraction * BAR_WIDTH as f32).round() as usize;
-    let mut bar = String::with_capacity(BAR_WIDTH);
+    let mut bar = String::with_capacity(BAR_WIDTH * 3);
     for i in 0..BAR_WIDTH {
-        bar.push(if i < filled { '█' } else { '░' });
+        // Box-drawing lines instead of full-height blocks: a thin track with a
+        // heavier filled section, which reads far lighter than `█`/`░`.
+        bar.push(if i < filled { '━' } else { '─' });
     }
     let percent = (fraction * 100.0).round() as u32;
     let time = match active {
