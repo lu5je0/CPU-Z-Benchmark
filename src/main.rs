@@ -229,10 +229,15 @@ fn cpu_name() -> String {
 }
 
 /// Two-line live panel, updated in place on a TTY.
+/// Ookla's transfer bar spins `-`, `\`, `|`, `/` at the head of the fill.
+const SPINNER: [char; 4] = ['-', '\\', '|', '/'];
+
 struct Panel {
     single: Option<f32>,
     multi: Option<f32>,
     lines: usize,
+    /// Redraw counter; advances the spinner.
+    frame: usize,
 }
 
 impl Panel {
@@ -241,6 +246,7 @@ impl Panel {
             single: None,
             multi: None,
             lines: 0,
+            frame: 0,
         }
     }
 
@@ -250,15 +256,20 @@ impl Panel {
             Pass::Multi => self.multi = Some(p.score),
         }
 
+        let spin = SPINNER[self.frame % SPINNER.len()];
+        self.frame = self.frame.wrapping_add(1);
+
         let line1 = row_line(
             "Single Thread",
             self.single,
             if p.pass == Pass::Single { Some(p) } else { None },
+            spin,
         );
         let line2 = row_line(
             "Multi  Thread",
             self.multi,
             if p.pass == Pass::Multi { Some(p) } else { None },
+            spin,
         );
 
         if self.lines > 0 {
@@ -271,27 +282,48 @@ impl Panel {
     }
 }
 
-fn row_line(label: &str, score: Option<f32>, active: Option<&Progress>) -> String {
-    let (fraction, text) = match active {
+/// How far along a row's bar is.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Bar {
+    /// Not started (or not this pass): an empty track, no cursor.
+    Idle,
+    /// Running: `=` up to the cursor, spinning head, spaces behind.
+    Running,
+    /// Finished: filled edge to edge.
+    Done,
+}
+
+fn row_line(label: &str, score: Option<f32>, active: Option<&Progress>, spin: char) -> String {
+    let (state, fraction, text) = match active {
         Some(p) if !p.done => (
+            Bar::Running,
             (p.elapsed_ms as f32 / p.duration_ms.max(1) as f32).clamp(0.0, 1.0),
             format!("{:>6.0}", p.score),
         ),
-        _ => {
-            let frac = if score.is_some() { 1.0 } else { 0.0 };
-            let text = score
-                .map(|s| format!("{:>6.0}", s))
-                .unwrap_or_else(|| "     -".to_string());
-            (frac, text)
-        }
+        _ => match score {
+            Some(s) => (Bar::Done, 1.0, format!("{s:>6.0}")),
+            None => (Bar::Idle, 0.0, "     -".to_string()),
+        },
     };
 
+    // Ookla/speedtest layout: `=` for the completed part, a spinning cursor at
+    // its head, then spaces.
     let filled = (fraction * BAR_WIDTH as f32).round() as usize;
-    let mut bar = String::with_capacity(BAR_WIDTH * 3);
-    for i in 0..BAR_WIDTH {
-        // Box-drawing lines instead of full-height blocks: a thin track with a
-        // heavier filled section, which reads far lighter than `█`/`░`.
-        bar.push(if i < filled { '━' } else { '─' });
+    let mut bar = String::with_capacity(BAR_WIDTH);
+    match state {
+        Bar::Idle => bar.extend(std::iter::repeat(' ').take(BAR_WIDTH)),
+        Bar::Done => bar.extend(std::iter::repeat('=').take(BAR_WIDTH)),
+        Bar::Running => {
+            for i in 0..BAR_WIDTH {
+                bar.push(if i < filled {
+                    '='
+                } else if i == filled {
+                    spin
+                } else {
+                    ' '
+                });
+            }
+        }
     }
     let percent = (fraction * 100.0).round() as u32;
     let time = match active {
