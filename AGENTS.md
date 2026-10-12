@@ -69,6 +69,17 @@ cargo run --release -- --duration 3000 -q --json     # 脚本/CI 用输出
 - **不要为了“跨平台更可比”去开 FMA / `target-cpu=native`**：rustc 默认就是 `fp-contract=off`
   （实测：`-C target-feature=+fma` 下只生成 `vmulss`+`vaddss`），两边都是逐次 mul/add；
   一旦开了收缩/自动向量化，分数就不再是 CPU-Z 那套逐次 SSE 标量运算了
+- **aarch64 必须标量**：官方 `cpuz_arm64.exe` v1.06 整个二进制没有任何向量寄存器浮点指令（已用 capstone 全扫），
+  但 aarch64 基线自带 NEON，LLVM 会把独立的 hash/像素混合 SLP 成 4-wide（旧产物里 143 条向量 FP，单核虚高到 2323）。
+  `.cargo/config.toml` 里只对两个 aarch64 target 关 SLP/循环向量化；**x86_64 故意不加**：
+  那边 LLVM 打成 SSE（61 条 packed）但分数与官方一致（872 对 872），强关反而变 912
+- 守门脚本：`python3 scripts/check_scalar_kernel.py <binary>`（aarch64 违规 exit 1，x86-64 仅报告）
+- **别用 `objdump --disassemble=<symbol>` 做这种检查**：mangled 名匹配不上时它输出为空，
+  `grep -c` 返回 0 —— 我因此得到过“x86 是纯标量”的假阴性。要用全量 `-d` + 函数名跟踪
+- ARM64 官方的计分链（参考）：原始单位 rows/ms，界面显示 = 实测/参考×参考分（13 项参考表，
+  在 .rdata 0x1402FA4F0），两次 10s pass + `Sleep(10)`，4MiB buffer，`CBenchCPU_v17`；
+  另一个独立逆向仓库 https://github.com/DannielYu219/CPU-reZ 与我们的结论一致（它那个 4-wide NEON 重写
+  在 M5 Pro 上单核 headline 1554、多核 18T 19647）
 
 ## 提交约定
 

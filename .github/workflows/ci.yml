@@ -8,6 +8,7 @@ on:
 
 jobs:
   test:
+    name: x86_64 tests + smoke
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,5 +21,39 @@ jobs:
         run: cargo build --release --bin cpuz-bench
       - name: Cross-check aarch64 (release binaries)
         run: cargo check --release --bin cpuz-bench --target aarch64-unknown-linux-gnu
+      - name: Kernel instruction mix (informational on x86-64)
+        run: python3 scripts/check_scalar_kernel.py target/release/cpuz-bench
       - name: Smoke run
         run: ./target/release/cpuz-bench --duration 1000 --single-only --no-live -q
+
+  arm64:
+    # CPU-Z's own ARM64 build is scalar (`cpuz_arm64.exe` has no vector-register
+    # floating-point instruction at all), so the aarch64 build must be scalar
+    # too. This job enforces the invariant on real ARM64 hardware and measures
+    # what letting LLVM vectorise would have done to the score.
+    name: aarch64 scalar kernel + A/B
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build (scalar kernel, as shipped)
+        run: cargo build --release --bin cpuz-bench
+      - name: Verify kernel is scalar
+        run: python3 scripts/check_scalar_kernel.py target/release/cpuz-bench
+      - name: Score (scalar kernel)
+        run: |
+          cp target/release/cpuz-bench /tmp/cpuz-bench-scalar
+          /tmp/cpuz-bench-scalar --duration 4000 -q
+      - name: Build natural-vectorisation variant
+        # RUSTFLAGS replaces the target rustflags from .cargo/config.toml,
+        # which is exactly what we want for the A/B.
+        run: |
+          RUSTFLAGS="-C opt-level=3 -C lto" cargo build --release --bin cpuz-bench
+      - name: Score (LLVM free to SLP/loop vectorise)
+        run: |
+          cp target/release/cpuz-bench /tmp/cpuz-bench-natural
+          python3 scripts/check_scalar_kernel.py /tmp/cpuz-bench-natural || true
+          /tmp/cpuz-bench-natural --duration 4000 -q
+      - name: Summary
+        run: |
+          echo "compare the two score blocks above: scalar (shipped) vs vectorised"

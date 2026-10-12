@@ -32,6 +32,8 @@ jobs:
           targets: ${{ matrix.target }}
       - name: Build
         run: cargo build --release --bin cpuz-bench --target ${{ matrix.target }}
+      - name: Verify kernel instruction mix
+        run: python3 scripts/check_scalar_kernel.py "target/${{ matrix.target }}/release/cpuz-bench"
       - name: Package
         run: |
           mkdir -p dist

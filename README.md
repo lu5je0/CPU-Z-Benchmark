@@ -13,7 +13,7 @@ TTY 下运行时先出现单线程、再多线程，分数从第一次采样（2
 之后小幅抖动到定稿——不会从低往高慢慢爬：
 
 ```
-cpuz-bench 0.2.2 - CPU-Z benchmark (17.01)
+cpuz-bench 0.2.3 - CPU-Z benchmark (17.01)
 CPU      : 13th Gen Intel(R) Core(TM) i7-13700KF
 Settings : 24 threads, 10000 ms/pass, batch 8 rows, live score
 
@@ -33,7 +33,7 @@ CPU (Multi Thread)  :    12665   (126746624 px in 10005 ms, 24 threads)
 ## 跨平台分数可比性（重要）
 
 **只有 x86_64 的分数能跟 CPU-Z 榜单对比。** 17.01 是一套 x86 SSE 标量工作负载，
-CPU-Z 也没有 macOS 版；在 ARM 上同一份源码映射到 NEON，跑出来的是“这套算法在 NEON 上多快”，
+在 ARM 上同一份源码映射到 NEON，跑出来的是“这套算法在 NEON 上多快”，
 不是“CPU-Z 会不会给这个分”。非 x86 构建会在输出里打一行提示。
 
 实测（同一份代码，各自原生构建，20s 默认跑）：
@@ -49,9 +49,21 @@ M5 Pro 的 2323 **不是“比 13700KF 快 2.7 倍”**：主流基准里两者�
 又没有 SMT 兄弟核争用；而 x86 侧还背着 cpu-z 原版的 `cvttss2si`+`comiss` 手动 floor、
 随机分支训错等固有开销。这类串行延迟型负载正是苹果提升、x86 吃亏的地方。
 
-已验证我们**没有在 ARM 上“偷工”**：rustc 默认 `fp-contract=off`（实测：即使 `-C target-feature=+fma`，
-生成的也只有 `vmulss`+`vaddss`，不会 Fusion 成 `vfmadd`），所以两边都是逐次 mul/add，
-编译器不会靠 FMA 白送一个乘法。
+另外注意：**CPU-Z 自己的 Windows ARM64 版（`cpuz_arm64.exe`，独立产品线 v1.06）既不是 x64 那套 workload，
+也不是 x64 那套量纲**。它只有 17.01（RTTI 里是 `CBenchCPU_v17`），原始单位是 rows/ms，
+界面显示的是**相对内置参考表的归一化分数**（13 项，含 X Elite 820/9165），
+所以 ARM64 版的数字本来就不能和 x64 榜单放在一起比。它对标的参考实现见
+[CPU-reZ](https://github.com/DannielYu219/CPU-reZ)（同一目标文件的完整逆向 + NEON/SME 重写）。
+
+我们也验证了**官方 ARM64 内核是纯标量**的：整个 `cpuz_arm64.exe` 里没有任何带向量寄存器的浮点指令
+（580k 条指令里只有 56 条 `fmadd` 且不在噪声核心里），采样器 `bl` 调用、`fmul`/`fadd`/`fabs` 全在 `s` 寄存器上。
+所以 aarch64 构建里我们用 `.cargo/config.toml` 关掉了 LLVM 的 SLP/循环向量化：
+不关的话内核会被自动打包成 4-wide NEON（实测 143 条向量 FP 指令），分数虚高。
+`scripts/check_scalar_kernel.py` 在 CI 里守这个不变量，CI 的 `arm64` job 还会在真 ARM 机器上做
+“标量 vs 允许向量化”的 A/B。
+
+> 注：x86_64 构建**不**加这两个 flag：那边 LLVM 会把相互独立的链打包成 SSE（61 条 packed 指令），
+> 且分数恰好与官方 CPU-Z 一致（872 对 872）；强行关掉会变成 912，反而偏离官方。
 
 ## 支持的基准模式（与 CPU-Z 下拉框对应）
 

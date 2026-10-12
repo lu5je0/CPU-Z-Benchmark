@@ -1,0 +1,33 @@
+# Keep the benchmark kernel scalar on ARM64, like CPU-Z's own code.
+#
+# The 17.01 kernel is scalar single-precision math: CPU-Z's x64 build uses
+# scalar SSE (`mulss`/`addss`) and its ARM64 build contains no vector-register
+# floating-point instruction at all (verified across the whole cpuz_arm64.exe).
+#
+# aarch64 has NEON in the baseline ISA, so LLVM's SLP/loop vectoriser happily
+# merges the independent gradient hashes and the pixel mix: a released aarch64
+# build had 143 vector FP instructions inside the noise kernel and scored 2323
+# instead of the scalar ~1550. Both flags are needed (`-vectorize-loops` for
+# loops, `-vectorize-slp` for the basic-block form the kernel triggers).
+#
+# Deliberately scoped to the aarch64 targets: on x86_64 these flags change the
+# scalar schedule and move the score away from what CPU-Z itself reports
+# (872 -> 912 on the i7-13700KF), while x86_64 needs no help staying scalar
+# (its FP arithmetic is already scalar; `andps` there is only the abs mask).
+#
+# `scripts/check_scalar_kernel.py` guards the invariant in CI.
+[target.aarch64-unknown-linux-gnu]
+rustflags = [
+    "-C",
+    "llvm-args=-vectorize-slp=false",
+    "-C",
+    "llvm-args=-vectorize-loops=false",
+]
+
+[target.aarch64-apple-darwin]
+rustflags = [
+    "-C",
+    "llvm-args=-vectorize-slp=false",
+    "-C",
+    "llvm-args=-vectorize-loops=false",
+]
