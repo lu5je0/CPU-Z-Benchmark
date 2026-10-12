@@ -66,6 +66,16 @@ jobs:
             "https://download.cpuid.com/cpu-z/arm64/cpuz-arm64_${CPUZ_ARM64_VERSION}.zip"
           unzip -o -q /tmp/cpuz-arm64.zip cpuz_arm64.exe -d dist
           ls -l dist/cpuz_arm64.exe
+      - name: Fetch CPUID's official x86_64 build
+        # Same for x86_64: the CLI prefers CPUID's own kernel as ground truth.
+        continue-on-error: true
+        env:
+          CPUZ_X64_VERSION: "3.01"
+        run: |
+          curl -fsSL --retry 3 -o /tmp/cpuz-x64.zip \
+            "https://download.cpuid.com/cpu-z/cpu-z_${CPUZ_X64_VERSION}-en.zip"
+          unzip -o -q /tmp/cpuz-x64.zip cpuz_x64.exe -d dist
+          ls -l dist/cpuz_x64.exe
       - name: List assets
         run: ls -l dist
       - uses: softprops/action-gh-release@v2
@@ -73,5 +83,6 @@ jobs:
           files: |
             dist/cpuz-bench-*
             dist/cpuz_arm64.exe
+            dist/cpuz_x64.exe
           fail_on_unmatched_files: false
           generate_release_notes: true
