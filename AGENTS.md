@@ -64,10 +64,19 @@ cargo run --release -- --no-official -q              # 强制内置引擎
 
 ## 平台
 
-- 支持 Windows/Linux/macOS（`affinity.rs` 按 cfg 分支；libc 仅 Linux 用）
+- 支持 Windows/Linux/macOS/Android(Termux)（`affinity.rs` 按 cfg 分支；libc 用于 Linux **和 Android**）
+- **Android 是独立 `target_os`（bionic），不是 `linux`**：任何 `#[cfg(target_os = "linux")]`
+  都要想一下 `target_os = "android"`（affinity 已改成 `any(linux, android)`）。libc crate 在
+  android 上同样导出 `sched_setaffinity` / `cpu_set_t` / `CPU_SET`，所以 pinning 代码不用分叉
+- **Termux 上可以直接跑官方 ARM64 内核**：`cpuz_arm64.exe` 的 17.01 内核是纯标量 AArch64、
+  无 import，`src/official.rs` 的 mmap + `mprotect(RX)` 在 Android 上同样成立（和 macOS 一样）。
+  唯一变数是 SELinux 的 execmem（某些 ROM 会封匿名可执行内存）——被拒时 `mprotect(PROT_EXEC) failed`
+  会打出来并回退内置引擎，不会崩
 - 运行 CPU-Z 验证分数时：其下拉框版本对应 `--mode`（17.01 SSE / 19.01 SSE / 19.01 AVX2），AVX512 用 AVX2 回退
 - 本机 CPU 是 16C/24T Intel 大小核：E-core 拖累多线程扩展，比较分数需固定同机
-- CI/release 矩阵：`ubuntu-latest`(x86_64)、`ubuntu-24.04-arm`(aarch64)、`macos-14`(aarch64)
+- CI/release 矩阵：`ubuntu-latest`(x86_64)、`ubuntu-24.04-arm`(aarch64)、`macos-14`(aarch64)、
+  `android-aarch64`（`aarch64-linux-android`，在 ubuntu-latest 上用 NDK r27c 交叉编译，
+  链 `aarch64-linux-android24-clang`；产物动态链 bionic，Termux 可直接跑）
 - **只有 x86_64 分数能跟 CPU-Z 榜单比**。实测 M5 Pro 单核 2323 / 多核 26652（NEON，同机 13700KF 是 868/12495）：
   这是长依赖链标量浮点负载，苹果核在延迟/OoO 窗口上优势极大，不代表主流基准里的 1.4~1.5x 单核差距。
   非 x86 构建会在输出里打提示（`PLATFORM_NOTE`，按 `target_arch` cfg）
@@ -76,7 +85,8 @@ cargo run --release -- --no-official -q              # 强制内置引擎
   一旦开了收缩/自动向量化，分数就不再是 CPU-Z 那套逐次 SSE 标量运算了
 - **aarch64 必须标量**：官方 `cpuz_arm64.exe` v1.06 整个二进制没有任何向量寄存器浮点指令（已用 capstone 全扫），
   但 aarch64 基线自带 NEON，LLVM 会把独立的 hash/像素混合 SLP 成 4-wide（旧产物里 143 条向量 FP，单核虚高到 2323）。
-  `.cargo/config.toml` 里只对两个 aarch64 target 关 SLP/循环向量化；**x86_64 故意不加**：
+  `.cargo/config.toml` 里只对三个 aarch64 target 关 SLP/循环向量化（`aarch64-unknown-linux-gnu` /
+  `aarch64-apple-darwin` / `aarch64-linux-android`）；**x86_64 故意不加**：
   那边 LLVM 打成 SSE（61 条 packed）但分数与官方一致（872 对 872），强关反而变 912
 - 守门脚本：`python3 scripts/check_scalar_kernel.py <binary>`（aarch64 违规 exit 1，x86-64 仅报告）
 - **别用 `objdump --disassemble=<symbol>` 做这种检查**：mangled 名匹配不上时它输出为空，

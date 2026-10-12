@@ -92,12 +92,13 @@ M5 Pro 的 2323 **不是“比 13700KF 快 2.7 倍”**：主流基准里两者�
 
 ## 下载预编译版本
 
-GitHub Release 提供三个平台的单文件二进制（由 `.github/workflows/release.yml` 构建）：
+GitHub Release 提供四个平台的单文件二进制（由 `.github/workflows/release.yml` 构建）：
 
 ```
 cpuz-bench-linux-x86_64
 cpuz-bench-linux-aarch64
 cpuz-bench-macos-aarch64
+cpuz-bench-android-aarch64     # Termux（NDK 交叉编译，链 bionic）
 ```
 
 ```bash
@@ -195,6 +196,47 @@ CPUZ_X64_EXE=/path/to/cpuz_x64.exe ./target/release/cpuz-bench
 > 的标量浮点指令顺序不同，1 ulp 差异经 `fract(· × 43758.547)` 放大成个别像素的色差），
 > 分数才是对齐目标。
 
+### Android / Termux
+
+Android（aarch64）是独立 `target_os`，但底层就是 bionic/Linux，所以支持方式和其他 aarch64 一样：
+
+```bash
+# 1) 直接下预编译产物（NDK 交叉编译，动态链 bionic，Termux 里可直接跑）
+curl -fL -o cpuz-bench \
+  https://github.com/lu5je0/CPU-Z-Benchmark/releases/latest/download/cpuz-bench-android-aarch64
+chmod +x cpuz-bench && ./cpuz-bench --duration 3000
+
+# 2) 或者自己在 Termux 里编译（pkg install rust 之后，无需 NDK）
+pkg install rust
+cargo build --release --bin cpuz-bench
+./target/release/cpuz-bench
+```
+
+**Termux 上同样能直接跑 CPU-Z 的官方 ARM64 内核**，和 Apple Silicon 的 `--official` 是同一套做法：
+`cpuz_arm64.exe` 的 17.01 内核是纯标量 AArch64、无 import、除参数块和梯度表外无外部数据，
+所以 `src/official.rs` 把它按段摆进一块匿名内存就能原生调用——Android 和 macOS 的指令集、
+调用约定完全一致：
+
+```bash
+# 从 CPU-Z 官网下载 cpuz-arm64_1.06.zip，解出 cpuz_arm64.exe 放到 Termux 里
+./cpuz-bench --official ~/cpuz_arm64.exe     # Source: official cpuz_arm64.exe v1.06 kernel
+./cpuz-bench --official ~/cpuz_arm64.exe --compare   # 对比我们 LLVM 构建快多少
+```
+
+前提是这台机器的 SELinux 策略允许 `execmem`（`mmap` RW → `mprotect` RX，正是 JIT/QEMU 用的同一条路）。
+Termux 的目标 SDK 足够低，原生 Termux 里 JIT 是可用的；但如果某个 ROM 把匿名可执行内存也封了，
+`mprotect(PROT_EXEC) failed` 会直接打出来并自动回退到内置引擎，不会崩。
+
+注意点：
+
+- **分数只在同机同架构内可比。** 这是标量 AArch64 工作负载，不是 CPU-Z 给 x86 的那张榜。
+- `src/affinity.rs` 在 Android 上也走 `sched_setaffinity`，每个 worker 绑一个逻辑核；
+  大小核手机上不绑的话调度器会把几个 worker 塞到同一个核上，多线程分会崩。
+- 内置引擎的 aarch64 构建沿用 `.cargo/config.toml` 里的标量配置（Termux 的
+  `aarch64-linux-android` 目标已加入），否则 LLVM 的 SLP 会把它向量化、单核虚高到 ~2300。
+- CPU 名识别：`/proc/cpuinfo` 在部分厂商 ROM 上被裁剪，会再试 `getprop ro.soc.model` /
+  `ro.board.platform` / `ro.product.board` / `ro.hardware`。
+
 ## 实现结构
 
 ```
@@ -211,7 +253,7 @@ src/
   main.rs       # CLI + 实时分数面板
 .github/workflows/
   ci.yml        # push/PR 上跑测试与冒烟跑分
-  release.yml   # 打 tag 时构建三平台二进制并发布 Release
+  release.yml   # 打 tag 时构建四平台二进制并发布 Release
 ```
 
 ## 分数对齐说明
