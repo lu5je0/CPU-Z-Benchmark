@@ -33,6 +33,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
+use crate::affinity::{cpus_fastest_first, pin_thread_to_cpu};
 use crate::bench::{BenchOptions, BenchResult, Pass, PassResult, Progress};
 
 pub const WIDTH: usize = 1024;
@@ -208,14 +209,23 @@ impl Kernel {
         let dst = buf.as_mut_ptr() as usize;
         let height = HEIGHT as u64;
         let threads = threads.max(1);
+        // Pin every worker like CPU-Z does. The list is fastest-first, so the
+        // 1T pass lands on the prime core and the multi pass spreads over
+        // distinct reachable cores; it is empty on platforms without affinity
+        // control (macOS), which leaves the workers unpinned as before.
+        let cpus = cpus_fastest_first();
 
         let start = Instant::now();
         let duration = opts.duration_ms;
 
         std::thread::scope(|scope| {
-            for _ in 0..threads {
+            for i in 0..threads {
                 let (next, units, stop, ctx, tile) = (&next, &units, &stop, &ctx, self.tile);
+                let cpu = cpus.get(i).copied();
                 scope.spawn(move || {
+                    if let Some(cpu) = cpu {
+                        pin_thread_to_cpu(cpu);
+                    }
                     let mut param = Param {
                         pad0: [0; 0x18],
                         ctx,

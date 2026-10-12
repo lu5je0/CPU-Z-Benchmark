@@ -72,12 +72,19 @@ cargo run --release -- --no-official -q              # 强制内置引擎
   无 import，`src/official.rs` 的 mmap + `mprotect(RX)` 在 Android 上同样成立（和 macOS 一样）。
   唯一变数是 SELinux 的 execmem（某些 ROM 会封匿名可执行内存）——被拒时 `mprotect(PROT_EXEC) failed`
   会打出来并回退内置引擎，不会崩
-- **Android 单线程必须绑最快核，不能照搬 CPU-Z 的 CPU 0**：`bench.rs` 原来和桌面一样把单线程 worker
-  钉在逻辑 CPU 0，但手机内核把最快的簇编在最后（骁龙 8E5：cpu0~5 = 3.63GHz 性能核，cpu6/7 = 4.74GHz
-  prime）。用 `affinity::fastest_cpu()` 读 `cpufreq/cpuinfo_max_freq` 挑最高的，并先用
-  `sched_getaffinity` 过滤可达集（Android 的 cpuset cgroup 可能把 prime 簇对 app 藏掉，那软件无解）。
-  仅 Android 这样做；其他平台保持 CPU 0，因为 x86/Apple Silicon 已验证的分都是在那上面测的。
-  注意 `official.rs` 的官方内核路径**目前完全不绑核**
+- **单线程必须绑最快核，不能照搬 CPU-Z 的 CPU 0**：`bench.rs` 原来和桌面一样把单线程 worker 钉在
+  逻辑 CPU 0，但手机内核把最快的簇编在最后（骁龙 8E5：cpu0~5 = 3.63GHz 性能核，cpu6/7 = 4.74GHz
+  prime）。`affinity::cpus_fastest_first()` 读 `cpufreq/cpuinfo_max_freq` 从快到慢排序，并先用
+  `sched_getaffinity` 过滤可达集（Android 的 cpuset cgroup 可能把 prime 簇对 app 藏掉，那软件无解；
+  绑不可达的核会 EINVAL）。
+  - `official.rs`（aarch64 官方内核）现在**每个 worker 都绑**：1T → 最快核，多线程 → 前 n 个核。
+    之前它完全不绑核，完全靠调度器——实测骁龙 8E5 上单核只有 582（=3.63GHz 性能核的数值），
+    绑到 prime 应该 ~760。
+  - 内置引擎的单线程只有 Android 用最快核，其他平台保持 CPU 0（x86/Apple Silicon 已验证的 872/1674
+    都是在 CPU 0 上测的）。
+  - macOS 上 `cpus_fastest_first()` 返回空（Mach 亲和性是 hint，本来就没实现）→ 仍然不绑，
+    M5 Pro 的 1674/18368 不变。
+  - `official_x64.rs` 仍不绑核（那边未绑核的 865~879 / ~12500~12700 已对拍官方）。
 - 运行 CPU-Z 验证分数时：其下拉框版本对应 `--mode`（17.01 SSE / 19.01 SSE / 19.01 AVX2），AVX512 用 AVX2 回退
 - 本机 CPU 是 16C/24T Intel 大小核：E-core 拖累多线程扩展，比较分数需固定同机
 - CI/release 矩阵：`ubuntu-latest`(x86_64)、`ubuntu-24.04-arm`(aarch64)、`macos-14`(aarch64)、
