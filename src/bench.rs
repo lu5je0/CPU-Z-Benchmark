@@ -315,6 +315,16 @@ impl BenchResult {
     pub fn multi_score(&self) -> f32 {
         self.multi.as_ref().map(|r| r.score).unwrap_or(0.0)
     }
+
+    /// Multi/single scaling factor, when both passes ran and the single-thread
+    /// score is non-zero.
+    pub fn ratio(&self) -> Option<f32> {
+        let single = self.single.as_ref()?.score;
+        if single <= 0.0 {
+            return None;
+        }
+        Some(self.multi.as_ref()?.score / single)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

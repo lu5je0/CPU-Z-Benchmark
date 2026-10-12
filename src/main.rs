@@ -405,6 +405,10 @@ fn print_report(cli: &Cli, result: &BenchResult, source: &str, replica: Option<&
             ),
             None => println!("  \"multi\": null,"),
         }
+        match result.ratio() {
+            Some(r) => println!("  \"ratio\": {r:.2},"),
+            None => println!("  \"ratio\": null,"),
+        }
         match replica {
             None => println!("  \"replica\": null"),
             Some(rep) => {
@@ -449,6 +453,9 @@ fn print_report(cli: &Cli, result: &BenchResult, source: &str, replica: Option<&
             r.ms,
             r.threads
         );
+    }
+    if let Some(r) = result.ratio() {
+        println!("Multi / Single      : {:>8.2}x", r);
     }
     if let Some(rep) = replica {
         let s = rep
