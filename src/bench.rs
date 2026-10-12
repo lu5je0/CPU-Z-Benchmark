@@ -205,6 +205,7 @@ fn worker_loop(w: Arc<Worker>) {
         // SAFETY: rows [row0, row0+rows) belong exclusively to this job.
         let buf = unsafe { std::slice::from_raw_parts_mut(w.buf.ptr, w.buf.len) };
         match job.engine {
+            #[cfg(target_arch = "x86_64")]
             Engine::V1901Avx2 => unsafe {
                 crate::noise_avx2::render_rows_avx2(
                     buf,
@@ -216,6 +217,8 @@ fn worker_loop(w: Arc<Worker>) {
                     BENCH_WIDTH * 4,
                 );
             },
+            // `_` also covers V1901Avx2 on non-x86_64 hosts, where the 19.01
+            // SSE kernel is the fallback.
             _ => {
                 render_rows(
                     job.engine,

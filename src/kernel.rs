@@ -69,12 +69,19 @@ pub fn pixel(engine: Engine, x: i32, y: i32) -> [u8; 4] {
             crate::noise1901::noise_a(x, y),
             crate::noise1901::noise_b(x, y),
         ),
+        #[cfg(target_arch = "x86_64")]
         Engine::V1901Avx2 => unsafe {
             (
                 crate::noise_avx2::noise_a(x, y),
                 crate::noise_avx2::noise_b(x, y),
             )
         },
+        // No AVX2 on this architecture: use the 19.01 SSE engine instead.
+        #[cfg(not(target_arch = "x86_64"))]
+        Engine::V1901Avx2 => (
+            crate::noise1901::noise_a(x, y),
+            crate::noise1901::noise_b(x, y),
+        ),
     };
 
     let v15 = clamp01(n2 * 0.60000002 + 0.5);
