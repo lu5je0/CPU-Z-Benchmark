@@ -13,7 +13,7 @@ TTY 下运行时先出现单线程、再多线程，分数从第一次采样（2
 之后小幅抖动到定稿——不会从低往高慢慢爬：
 
 ```
-cpuz-bench 0.2.4 - CPU-Z benchmark (17.01)
+cpuz-bench 0.2.5 - CPU-Z benchmark (17.01)
 CPU      : 13th Gen Intel(R) Core(TM) i7-13700KF
 Settings : 24 threads, 10000 ms/pass, batch 8 rows, live score
 
@@ -163,9 +163,13 @@ export CPUZ_ARM64_EXE=/path/to/cpuz_arm64.exe
 ./target/release/cpuz-bench --no-official
 ```
 
-官方 exe 从 <https://download.cpuid.com/cpu-z/arm64/cpuz-arm64_1.06.zip> 获取（本仓库不分发它）。
-v1.05 和 v1.06 都支持（用常量池签名定位，不依赖固定地址）。x86_64 上不需要：那边内置引擎已经与官方
-分数逐分对齐，`--official` 会直接报错。
+官方 exe 直接从本仓库的 release 拿：`cpuz_arm64.exe` 跟三平台二进制一起发布（从 CPUID 原始源
+<https://download.cpuid.com/cpu-z/arm64/> 下载后原样转发，见 [NOTICE](NOTICE)：该文件版权属 CPUID，
+不适用本项目的 MIT 许可）。v1.05 和 v1.06 都支持（用常量池签名定位，不依赖固定地址）。
+`q-cpuz-benchmark` 封装会自动把它放到缓存目录；想跳过就走 `CPUZ_NO_OFFICIAL=1`。
+
+x86_64 上不需要 `--official`：那边内置引擎已经与官方发布分逐分对齐（13700KF 872↔官方 872），
+再跑 CPUID 的 x64 内核没有额外收益，所以 `--official` 在 x86_64 上会直接报错。
 
 ## 实现结构
 

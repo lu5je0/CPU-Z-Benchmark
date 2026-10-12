@@ -1,0 +1,23 @@
+cpuz-bench is MIT licensed (see LICENSE). Two things it ships or fetches are
+not covered by that license:
+
+cpuz_arm64.exe
+    CPU-Z for Windows ARM64, (c) CPUID, https://www.cpuid.com/. It is
+    redistributed unmodified in this project's GitHub releases, and fetched at
+    release time from https://download.cpuid.com/cpu-z/arm64/, purely so that
+    `cpuz-bench --official` can score aarch64 builds with CPUID's own benchmark
+    kernel instead of our LLVM build of the same algorithm. It is not part of
+    this project's source and carries no license from us; all rights remain
+    with CPUID. Remove it if CPUID objects.
+    The `q-cpuz-benchmark` wrapper in the author's dotfiles downloads it into
+    the local cache for the same purpose; nothing is executed beyond the
+    benchmark kernel.
+
+    If the file is absent, `cpuz-bench` falls back to its own engine and says
+    so. To skip fetching it entirely, pass --no-official or set
+    CPUZ_NO_OFFICIAL=1.
+
+The 17.01 / 19.01 benchmark algorithms reimplemented in src/ were recovered by
+disassembling CPUID's binaries for interoperability. Addresses, constant pools
+and instruction shapes quoted in the docs and source comments are facts about
+those binaries, included so the reimplementation can be checked against them.

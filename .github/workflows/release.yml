@@ -55,9 +55,23 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Fetch CPUID's official ARM64 build
+        # Vendored so `--official` works without the user hunting for the exe;
+        # non-fatal because the replica still scores on its own if this fails.
+        continue-on-error: true
+        env:
+          CPUZ_ARM64_VERSION: "1.06"
+        run: |
+          curl -fsSL --retry 3 -o /tmp/cpuz-arm64.zip \
+            "https://download.cpuid.com/cpu-z/arm64/cpuz-arm64_${CPUZ_ARM64_VERSION}.zip"
+          unzip -o -q /tmp/cpuz-arm64.zip cpuz_arm64.exe -d dist
+          ls -l dist/cpuz_arm64.exe
       - name: List assets
         run: ls -l dist
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist/cpuz-bench-*
+          files: |
+            dist/cpuz-bench-*
+            dist/cpuz_arm64.exe
+          fail_on_unmatched_files: false
           generate_release_notes: true
