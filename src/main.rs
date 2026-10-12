@@ -13,6 +13,17 @@ use cpuz_bench::kernel::Engine;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const BAR_WIDTH: usize = 24;
 
+/// CPU-Z 17.01 is an x86 SSE scalar workload. On other architectures the same
+/// source compiles to NEON/etc. and the score is not comparable to CPU-Z's x86
+/// reference numbers (there is no official CPU-Z benchmark for this platform).
+#[cfg(target_arch = "x86_64")]
+const PLATFORM_NOTE: Option<&str> = None;
+#[cfg(not(target_arch = "x86_64"))]
+const PLATFORM_NOTE: Option<&str> = Some(
+    "Note: non-x86 build — 17.01 is an x86 SSE scalar workload, so this score is\n        \
+     not comparable to CPU-Z's x86 reference scores.",
+);
+
 struct Cli {
     bench: BenchOptions,
     json: bool,
@@ -266,6 +277,7 @@ fn print_report(cli: &Cli, result: &BenchResult) {
         println!("{{");
         println!("  \"mode\": \"{mode}\",");
         println!("  \"cpu\": \"{}\",", cli.cpu);
+        println!("  \"arch\": \"{}\",", env::consts::ARCH);
         println!("  \"duration_ms\": {},", cli.bench.duration_ms);
         match &result.single {
             Some(r) => println!(
@@ -301,6 +313,10 @@ fn print_report(cli: &Cli, result: &BenchResult) {
     }
 
     println!("=== CPU-Z Benchmark ({mode}) ===");
+    if let Some(note) = PLATFORM_NOTE {
+        println!("Note: non-x86 build, see --help; not comparable to CPU-Z x86 scores.");
+        let _ = note;
+    }
     if let Some(r) = &result.single {
         println!(
             "CPU (Single Thread) : {:>8}   ({} px in {} ms)",
@@ -330,7 +346,10 @@ fn main() {
     };
 
     if !cli.json && !cli.quiet {
-        println!("cpuz-bench {VERSION} - CPU-Z benchmark ({})", cli.bench.engine.name());
+        println!(
+            "cpuz-bench {VERSION} - CPU-Z benchmark ({})",
+            cli.bench.engine.name()
+        );
         println!("CPU      : {}", cli.cpu);
         println!(
             "Settings : {} threads, {} ms/pass, batch {}/{} rows{}",
@@ -340,6 +359,9 @@ fn main() {
             cli.bench.batch_rows_multi,
             if cli.live { ", live score" } else { "" }
         );
+        if let Some(note) = PLATFORM_NOTE {
+            println!("{note}");
+        }
         println!();
     }
 
