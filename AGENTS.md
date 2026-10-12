@@ -76,10 +76,43 @@ cargo run --release -- --duration 3000 -q --json     # 脚本/CI 用输出
 - 守门脚本：`python3 scripts/check_scalar_kernel.py <binary>`（aarch64 违规 exit 1，x86-64 仅报告）
 - **别用 `objdump --disassemble=<symbol>` 做这种检查**：mangled 名匹配不上时它输出为空，
   `grep -c` 返回 0 —— 我因此得到过“x86 是纯标量”的假阴性。要用全量 `-d` + 函数名跟踪
-- ARM64 官方的计分链（参考）：原始单位 rows/ms，界面显示 = 实测/参考×参考分（13 项参考表，
-  在 .rdata 0x1402FA4F0），两次 10s pass + `Sleep(10)`，4MiB buffer，`CBenchCPU_v17`；
-  另一个独立逆向仓库 https://github.com/DannielYu219/CPU-reZ 与我们的结论一致（它那个 4-wide NEON 重写
-  在 M5 Pro 上单核 headline 1554、多核 18T 19647）
+- ARM64 官方的计分链（参考）：计分单位是 **pixels/ms**（一个 1024×1024 frame 的 work 计数器是 1048576），
+  参考分表（13 项，X Elite 820/9165）就在这个单位下；两次 10s pass + `Sleep(10)`，4MiB buffer，`CBenchCPU_v17`。
+  见下面的“ARM64 保真度”一节。
+
+## ARM64 保真度（官方 `cpuz_arm64.exe`）
+
+用 `scripts/official_arm64_kernel.c` 把官方二进制里的内核机器码在本机原生跑（官方内核是纯标量、无 import、
+无外部数据引用，只读一个参数块和 4096 项梯度表，所以可以直接 mmap + 调用；仓库不分发官方二进制，
+运行时由用户自备 `cpuz_arm64.exe`）。
+
+已由反汇编 + 原生执行确认的事实（v1.05 与 v1.06 都一样）：
+
+- **官方 ARM64 内核 = 我们 x64 逆向的同一套算法**：外层 `#0xa`/`#0xa`/`#0x7`/`#0x7` 四个循环
+  （34 次采样/像素，即 noise_a 10+10 与 noise_b 7+7），常量池 1.1 / 1/1024 / 2.2 / 3.3 / 40 /
+  1.2 / 1.6 / 0.6 / 0.8 / 0.7 / 0.4 / 0.2 / 0.1 / 0.9 / 0.3 / 255 逐项相同，混色就是我们那套
+  `v15 = n2*0.6+0.5`、`v16 = clamp01(n1+n2)`、`v20/v21/v24`。全 `s` 寄存器标量。
+- **计分单位是 pixels/ms**：`tile` 每个 row 返回 `width`，一帧 1024×1024 的 work 计数器正好 1048576。
+  不是 rows/ms，也没有 `×256`。
+- **CPU-reZ 的重写不是官方算法**：它只做 2×10 = 20 次采样/像素（没有 noise_b 的两个 7 次循环），
+  混色是 `v*0.4+0.2/0.3/0.1`，而且按 `rows/ms × 256` 自造缩放。它自报的 M5 Pro headline 1554 与其
+  scalar 3.72 rows/ms 都是那个体系的产物，不能当官方基准。（它 spec 写的目标文件 5,203,688 字节 = v1.05，
+  但 v1.05 的内核实测也是 10/10/7/7。）
+- **算法等价的硬证据**：把梯度表整个设成 0（两边喂同一张表）后，官方内核与我们的 `render_rows`
+  渲染出的 1024×1024 帧**逐字节完全相同（0/4194304 差异）**。所以差异只在梯度表里 sin/cos 的 ulp——
+  表值乘 43758.547 后 frac 会把 1 ulp 放大成约 ±10 的像素色差（正常运行时 98% 像素差 1~15，这是预期的）。
+- **分数差是构建产物差异，不是工作量差异**：本机 M5 Pro，官方内核 626–636 ms/帧（≈1648 px/ms），
+  我们的 release 标量版 540–563 ms/帧（≈1851 px/ms）。我们每采样执行 ~375 条指令（官方 ~316 条），
+  却更快，即 IPC 更高——MSVC 的 AArch64 调度比 LLVM 差。`opt-level=1` 仍快 ~8%。
+  **没有任何合法手段能把它拉到 ±1%**，除非手写 aarch64 汇编复刻 MSVC 的指令序列。
+
+复现：
+
+```sh
+clang -O2 -o /tmp/oak scripts/official_arm64_kernel.c -lm
+/tmp/oak /path/to/cpuz_arm64.exe /tmp/official.raw   # 打印 px/ms，可选 dump 一帧
+./target/release/cpuz-bench --duration 3000 --single-only -q   # 我们这边对比
+```
 
 ## 提交约定
 
