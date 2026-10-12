@@ -9,37 +9,40 @@ Rust 复刻的 CPU-Z 基准测试（CPU Benchmark），算法与官方 CPU-Z 一
 
 ## 实时分数
 
-TTY 下运行时先出现单线程、再多线程，分数随进度刷新（`score = 已完成像素 / 已用毫秒`），
-和 CPU-Z 界面里数字慢慢稳住的行为一致：
+TTY 下运行时先出现单线程、再多线程，分数从第一次采样（200ms）起就是稳态值，
+之后小幅抖动到定稿——不会从低往高慢慢爬：
 
 ```
-cpuz-bench 0.2.0 - CPU-Z benchmark (17.01)
+cpuz-bench 0.2.1 - CPU-Z benchmark (17.01)
 CPU      : 13th Gen Intel(R) Core(TM) i7-13700KF
-Settings : 24 threads, 10000 ms/pass, batch 8/16 rows, live score
+Settings : 24 threads, 10000 ms/pass, batch 8 rows, live score
 
-  Single Thread [████████████████████████] 100%  score    871   10.0s/10.0s
-  Multi  Thread [███████████░░░░░░░░░░░░░]  46%  score  12532    4.6s/10.0s
+  Single Thread [████████████████████████] 100%  score    872   10.0s/10.0s
+  Multi  Thread [███████░░░░░░░░░░░░░░░░]  30%  score  12711    3.0s/10.0s
 
 === CPU-Z Benchmark (17.01) ===
-CPU (Single Thread) :      871   (8710144 px in 10004 ms)
-CPU (Multi Thread)  :    12574   (125826048 px in 10003 ms, 24 threads)
+CPU (Single Thread) :      872   (8724480 px in 10004 ms)
+CPU (Multi Thread)  :    12665   (126746624 px in 10005 ms, 24 threads)
 ```
 
-非 TTY（管道/重定向）时不会画面板，只在结束时输出结果。
+显示的是**最近约 1/4 pass 时长的瞬时速率**（`--interval` 控制采样间隔，默认 200ms），
+所以一开始就是稳态值；每个 pass 结束时打印的仍是整段平均 `units/ms`（与 CPU-Z 一致）。
+
+非 TTY（管道/重定向）时不会画面板，只在结束时输出结果；`--json` / `-q` 同样不发面板。
 
 ## 支持的基准模式（与 CPU-Z 下拉框对应）
 
 | 模式 | CPU-Z 内部值 | 噪声实现 | 分数参考（i7-13700KF 量级） |
 |------|-------------|---------|---------------------------|
-| 17.01 SSE（默认） | 0x17016400 | SSE 标量，10+7 octave | 单线程 ~870，多线程 ~12500 |
+| 17.01 SSE（默认） | 0x17016400 | SSE 标量，10+7 octave | 单线程 ~872，多线程 ~12600 |
 | 19.01 SSE | 0x19016400 | SSE 标量，权重表 | 单线程 ~220（约为 17.01 的 1/5） |
 | 19.01 AVX2 | 0x19016402 | AVX2 8-lane 真 SIMD | 单线程 ~1140 |
 | 19.01 AVX512 | 0x19016403 | 暂以 AVX2 回退 | - |
 
 > 分数 = 完成的工作单元数 / 毫秒。17.01 直接相除，19.01 再除以 10
 > （与 CPU-Z 的 sub_14002FC00 返回 `v13/v31`、sub_1400307F0 返回
-> `v38/v36/10` 一致）。实测 17.01：单线程 871 对官方 872，多线程 12574 对官方
-> 12287~12659，误差在 1~3% 以内。
+> `v38/v36/10` 一致）。实测 17.01：单线程 872 对官方 872，多线程 12665 对官方
+> 12287~12659，误差在 1% 以内。
 
 ## 下载预编译版本
 
@@ -100,7 +103,7 @@ src/
   noise1901.rs  # 19.01 变体（权重表）
   noise_avx2.rs # 19.01 AVX2 8-lane 引擎
   kernel.rs     # 每像素混合渲染内核
-  bench.rs      # 跑分循环：线程池 + 任务派发 + 计时 + 评分 + 进度回调
+  bench.rs      # 跑分循环：线程池 + 任务拉取 + 计时 + 评分 + 实时进度
   affinity.rs   # 每 worker 绑独立逻辑核
   main.rs       # CLI + 实时分数面板
 .github/workflows/

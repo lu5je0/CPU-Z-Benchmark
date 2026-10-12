@@ -18,13 +18,12 @@ cargo run --release -- --duration 3000 -q --json     # 脚本/CI 用输出
 
 ## 分数基准（16C/24T Intel 大小核，17.01 默认模式）
 
-- 实测单线程 869~872，官方参考 872；多线程 12490~12574，官方参考 12287~12659
+- 实测单线程 872~873，官方参考 872；多线程 12400~12716，官方参考 12287~12659
 - 分数 = units/ms（17.01）；units/ms/10（19.01）。units = 渲染行数×1024
 - **单点采样函数必须保持 `#[inline(never)]`**：CPU-Z 未内联这些调用，其 call 开销是工作量的一部分。全内联会让分数偏高 ~8%
 - `noise.rs` 用 `to_int_unchecked` 截断（对齐 cvttss2si）；`as i32` 是饱和转换，更慢
-- **batch rows 会明显影响多线程分数**（`--batch-rows`，单线程默认 8 行、多线程默认 16 行）：
-  128 行/任务时 MT 掉到 ~11800：dispatch 尾巴（最后一次派发的任务要等它跑完才算结束）
-  按比例摊薄分数；4 行/任务则因派发太频繁、worker 被饿到而掉到 ~11700。16 行是实测最稳的点
+- 多线程 batch（`--batch-rows`，默认 8 行）对分数影响在 1% 以内（4/8/16/32 行实测 12586~12687）；
+  单线程固定 1 行/任务（与 CPU-Z 每行一个 APC 一致）。**不要为了“调度更省”而加大单线程 batch**，见下面的气泡事故
 
 ## 架构
 
@@ -38,19 +37,25 @@ cargo run --release -- --duration 3000 -q --json     # 脚本/CI 用输出
 
 ### 并发模型（踩过的坑）
 
-- worker 用**每线程 `Mutex` + `Condvar`** 交接任务：dispatch 方 `wait_idle`/`dispatch_wait` 阻塞等待，
-  worker 完成时 `notify_all`。等价于 CPU-Z 的 alertable `WaitForSingleObjectEx`
-- **不要用 `park/unpark`**：`Worker::new` 里 `std::thread::current()` 拿到的是创建者（主线程）的句柄，
-  `dispatch()` 实际唤醒的是主线程，worker 永远在 park → `wait_idle()` 死循环。修复前该 bug 一直在
-- 不要长 spin（SMT 兄弟核会被拖慢，曾致 10740→7201）；多线程派发在全忙时才 `yield_now`
+- **worker 自驱动拉任务**：`PassState { next: AtomicU64, units: AtomicU64, stop }`，每个 worker 用一次 atomic RMW
+  取下一个 batch（`next += batch`），busy-wait 都不需要。这等价于 CPU-Z 的 QueueUserAPC ——
+  dispatcher 从不阻塞在渲染上，worker 永远拿得到下一行
+- **绝对不要用 dispatcher ↔ worker 逐任务握手**（`park/unpark` 或 `Mutex+Condvar` 版本都试过）：
+  只要 dispatcher 被调度器压住一个 tick，单核分数就会直接掉一半（实测出现 433 vs 872），
+  而且 `pool.total_units()` 会重复累加未结算的 job。自驱动方案彻底消除了这类气泡
+- 也不要用长 spin（SMT 兄弟核会被拖慢，曾致 10740→7201）
+- 共享 4MiB buffer 并发写不相交行：靠 `next` 递增 + `threads * batch <= BENCH_HEIGHT` 保证
+  （跨帧同一下标会写同一块内存，会 UB）
+- 计时：主线程拿 `Instant` 后全员过 `Barrier` 同时起跑；`stop` 后每人不超一个 batch 就退出，
+  所以 `ms` 把尾巴也算进去了，不会少算工作
 
-### 实时分数
+### 实时分数（滑动窗口）
 
-- `bench::run(opts, &mut on_progress)`：两个 pass 都在跑的过程中按 `--interval`（默认 200ms）
-  回调 `Progress { pass, done, score, units, elapsed_ms, duration_ms, threads }`
-- 实时值就是最终评分式子 `units_done / elapsed_ms`，所以会单调收敛到最终分数
-- 进度回调在 dispatcher 线程里同步执行；`main.rs` 只在 TTY 下画面板（两行原地刷新），
-  管道/`--json`/`-q` 时完全不画，避免污染输出
+- `LiveWindow`：每 `--interval`（默认 200ms）存一个 `(elapsed_ms, units)`，左边界取
+  “窗口宽 ≈ pass/4（250~1000ms）之外最近的样本”，分数 = 窗口内 `Δunits/Δms`
+- 为啥这么做：用“从开头累积的 `units/ms`”会让数字从低往高慢慢爬（早期受 CPU 升频/缺页影响），
+  用户明确说过不像 CPU-Z；滑动窗口从第一个采样就是稳态值，然后小幅抖动到定稿
+- **每个 pass 最终打印/JSON 里的分数仍是整段平均 `units/ms`**（与 CPU-Z 一致），窗口只影响过程显示
 
 ## 平台
 
