@@ -31,3 +31,17 @@ rustflags = [
     "-C",
     "llvm-args=-vectorize-loops=false",
 ]
+
+# Android (Termux) is also baseline-NEON AArch64, so it needs the exact same
+# scalar-kernel guarantee as the other aarch64 targets. Without this the
+# Termux build would report ~2300 instead of the scalar ~1550 for our own
+# engine (and ~1674 for CPUID's kernel). x86_64 Android is deliberately left
+# out for the same reason x86_64 Linux is: LLVM already emits scalar SSE there
+# and the flags would move the score away from CPU-Z's.
+[target.aarch64-linux-android]
+rustflags = [
+    "-C",
+    "llvm-args=-vectorize-slp=false",
+    "-C",
+    "llvm-args=-vectorize-loops=false",
+]
