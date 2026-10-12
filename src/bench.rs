@@ -1,4 +1,5 @@
-//! Benchmark engine: worker pool + job dispatch + timing + score + live progress.
+//! Benchmark engine: pinned worker pool, self-driven work pulling, timing and
+//! live progress.
 //!
 //! Faithful port of CPU-Z's benchmark loops:
 //! - 17.01 single (sub_14002FC00): one worker, 1024x1024, runs `duration` ms,
@@ -7,34 +8,34 @@
 //! - 19.01 single (sub_1400307F0): rows per batch = height/8, score = units/ms/10
 //! - 19.01 multi (sub_140030C20): frame dispatcher, score = units/ms/10
 //!
-//! CPU-Z dispatches work via QueueUserAPC to per-core worker threads; we
-//! emulate the same producer/consumer pattern. Workers block on a per-worker
-//! `Mutex` + `Condvar` (the portable equivalent of an alertable
-//! `WaitForSingleObjectEx`), the dispatcher waits for a free worker without
-//! burning an SMT sibling core.
+//! Work distribution
+//! =================
+//! CPU-Z dispatches rows through QueueUserAPC: the dispatcher thread never
+//! blocks on the renderer, so the worker always has the next row queued and
+//! never idles between rows. We reproduce that property with a shared,
+//! monotonically increasing row cursor (`next`) that workers advance with a
+//! single atomic RMW — no per-job hand-shake at all.
 //!
-//! Job semantics (from worker disassembly):
-//!   - 17.01 (sub_14004A9D0): one job = one row. Job fields:
-//!       x0 = iter counter, y0 = iter counter, row = v33 (0..height, wraps).
-//!     Sample coords: (x0 + i, y0 + row), buffer row = row. Units = width.
-//!   - 19.01 (sub_140031130): one job = `rows` rows. Job fields:
-//!       x0 = iter, y0 = iter, row0 = row start, rows = batch size.
-//!     Sample coords: (x0 + i, y0 + row0 + r), buffer row = row0 + r.
-//!     Units = rows * width.
+//! This matters for the score: a dispatcher-side hand-shake (even a condition
+//! variable hand-off) can stall the single worker for a scheduler tick, which
+//! measured as a halved single-thread score in one run. Pulling work from an
+//! atomic cursor keeps every worker busy for the whole window.
 //!
-//! The 4 MiB RGBA buffer is shared, exactly like CPU-Z: jobs are dispatched
-//! sequentially with monotonically advancing row ranges, so concurrent
-//! workers never touch overlapping rows. We use a raw-pointer shared buffer
-//! to avoid locking (a Mutex here would serialize workers and destroy the
-//! score).
+//! Concurrency safety of the shared frame buffer
+//! ============================================
+//! All workers write into the same 4 MiB RGBA buffer, exactly like CPU-Z.
+//! The cursor only ever advances, and the multi-threaded batch size is clamped
+//! so that `threads * batch <= BENCH_HEIGHT`, which guarantees that the rows
+//! in flight at any moment are pairwise disjoint (rows of different frames
+//! would otherwise alias the same memory).
 //!
-//! Live score: `score = completed_units / elapsed_ms_so_far`, which is the
-//! same quantity CPU-Z ends up reporting — it converges to the final score
-//! as the pass runs, exactly like the UI number slowly settles.
+//! Live score: `score = completed_units / elapsed_ms_so_far`, the same quantity
+//! CPU-Z reports at the end — it converges while the pass runs.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
-use std::time::Instant;
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Barrier};
+use std::time::{Duration, Instant};
 
 use crate::affinity::pin_thread_to_cpu;
 use crate::kernel::{render_rows, Engine};
@@ -42,21 +43,22 @@ use crate::kernel::{render_rows, Engine};
 pub const BENCH_WIDTH: usize = 1024;
 pub const BENCH_HEIGHT: usize = 1024;
 
-/// Rows per dispatched job. CPU-Z 17.01 dispatches one row per QueueUserAPC;
-/// batching only removes wakeup overhead from the measurement window, it does
-/// not change the rendered work or the score. The single-thread pass uses
-/// small batches so the live score moves smoothly.
-pub const DEFAULT_BATCH_ROWS_SINGLE: usize = 8;
-pub const DEFAULT_BATCH_ROWS_MULTI: usize = 16;
+/// CPU-Z dispatches one row per APC in 17.01; keeping a single row per job for
+/// the 1T pass reproduces that exactly (and makes the live score very smooth).
+pub const DEFAULT_BATCH_ROWS_SINGLE: usize = 1;
+/// Rows per job for the multi-threaded pass. Batching only amortises the
+/// dispatcher cost; it does not change the rendered work.
+pub const DEFAULT_BATCH_ROWS_MULTI: usize = 8;
 
-/// Shared frame buffer with disjoint-row guarantees (see module docs).
+/// Shared frame buffer. Workers never touch the same row concurrently, see the
+/// module docs for the disjointness argument.
 struct SharedBuf {
     ptr: *mut u8,
     len: usize,
 }
 
-// SAFETY: rows written by workers never overlap (guaranteed by dispatch
-// order), and each worker writes distinct memory.
+// SAFETY: rows written by workers are pairwise disjoint (see module docs) and
+// every worker writes a distinct memory range of the same allocation.
 unsafe impl Send for SharedBuf {}
 unsafe impl Sync for SharedBuf {}
 
@@ -65,7 +67,7 @@ impl SharedBuf {
         let mut v = vec![0u8; BENCH_WIDTH * BENCH_HEIGHT * 4];
         let ptr = v.as_mut_ptr();
         let len = v.len();
-        std::mem::forget(v); // raw memory, freed on drop below
+        std::mem::forget(v); // handed to the raw SharedBuf, freed in Drop
         Arc::new(SharedBuf { ptr, len })
     }
 }
@@ -78,142 +80,64 @@ impl Drop for SharedBuf {
     }
 }
 
-/// A single render job.
-#[derive(Clone, Copy)]
-struct Job {
-    engine: Engine,
-    x0: i32,
-    y0: i32,
-    row0: i32,
-    rows: usize,
-    width: usize,
-}
-
-/// Per-worker hand-off state, protected by the worker's mutex.
-struct WorkerState {
-    /// Pending job; the worker takes it and clears the slot.
-    job: Option<Job>,
-    /// True from dispatch until the job has been rendered (dispatcher waits
-    /// on this, mirroring CPU-Z's per-row completion check).
-    busy: bool,
-    stop: bool,
-}
-
-struct Worker {
-    state: Mutex<WorkerState>,
-    cv: Condvar,
+/// State shared by every worker of one pass.
+struct PassState {
     buf: Arc<SharedBuf>,
-    /// Completed work units (pixels). Written by the worker on completion,
-    /// read by the dispatcher for score bookkeeping and live progress.
+    engine: Engine,
+    batch: usize,
+    /// Row cursor: multiples of `batch`, monotonically increasing.
+    next: AtomicU64,
+    /// Completed work units (pixels) of this pass.
     units: AtomicU64,
+    stop: AtomicBool,
 }
 
-impl Worker {
-    fn spawn(
-        buf: Arc<SharedBuf>,
-        cpu: Option<usize>,
-    ) -> (Arc<Self>, std::thread::JoinHandle<()>) {
-        let w = Arc::new(Worker {
-            state: Mutex::new(WorkerState {
-                job: None,
-                busy: false,
-                stop: false,
-            }),
-            cv: Condvar::new(),
+impl PassState {
+    fn new(buf: Arc<SharedBuf>, engine: Engine, batch: usize) -> Arc<Self> {
+        Arc::new(PassState {
             buf,
+            engine,
+            batch: batch.clamp(1, BENCH_HEIGHT),
+            next: AtomicU64::new(0),
             units: AtomicU64::new(0),
-        });
-        let wh = Arc::clone(&w);
-        let handle = std::thread::spawn(move || {
-            if let Some(c) = cpu {
-                pin_thread_to_cpu(c);
-            }
-            worker_loop(wh);
-        });
-        (w, handle)
+            stop: AtomicBool::new(false),
+        })
     }
 
-    /// Queue a job if the worker is idle. Non-blocking: the multi-thread
-    /// dispatcher keeps looking for a free worker.
-    fn try_dispatch(&self, job: &Job) -> bool {
-        let mut st = match self.state.try_lock() {
-            Ok(st) => st,
-            Err(_) => return false,
-        };
-        if st.busy || st.stop {
-            return false;
+    /// Take the next job, or None once the pass has been stopped.
+    fn take_job(&self) -> Option<(u64, usize)> {
+        if self.stop.load(Ordering::Relaxed) {
+            return None;
         }
-        st.job = Some(*job);
-        st.busy = true;
-        drop(st);
-        self.cv.notify_one();
-        true
-    }
-
-    /// Queue a job, waiting for the previous one to finish first. Used by the
-    /// single-thread pass, which is fully serialized like CPU-Z's 1T driver.
-    fn dispatch_wait(&self, job: &Job) {
-        let mut st = self.state.lock().unwrap();
-        while st.busy {
-            st = self.cv.wait(st).unwrap();
-        }
-        st.job = Some(*job);
-        st.busy = true;
-        drop(st);
-        self.cv.notify_one();
-    }
-
-    /// Wait until no job is in flight on this worker.
-    fn wait_idle(&self) {
-        let mut st = self.state.lock().unwrap();
-        while st.busy {
-            st = self.cv.wait(st).unwrap();
-        }
-    }
-
-    fn units(&self) -> u64 {
-        self.units.load(Ordering::Acquire)
-    }
-
-    /// Tell the worker to exit; returns once it has stopped.
-    fn shutdown(&self) {
-        let mut st = self.state.lock().unwrap();
-        while st.busy {
-            st = self.cv.wait(st).unwrap();
-        }
-        st.stop = true;
-        drop(st);
-        self.cv.notify_all();
+        let idx = self.next.fetch_add(self.batch as u64, Ordering::Relaxed);
+        Some((idx, self.batch))
     }
 }
 
-fn worker_loop(w: Arc<Worker>) {
-    loop {
-        let job = {
-            let mut st = w.state.lock().unwrap();
-            loop {
-                if let Some(j) = st.job.take() {
-                    break j;
-                }
-                if st.stop {
-                    return;
-                }
-                st = w.cv.wait(st).unwrap();
-            }
-        };
+fn worker_loop(pass: Arc<PassState>, barrier: Arc<Barrier>, cpu: Option<usize>) {
+    if let Some(c) = cpu {
+        pin_thread_to_cpu(c);
+    }
+    barrier.wait(); // released together with the timing thread
 
-        // SAFETY: rows [row0, row0+rows) belong exclusively to this job.
-        let buf = unsafe { std::slice::from_raw_parts_mut(w.buf.ptr, w.buf.len) };
-        match job.engine {
+    while let Some((idx, batch)) = pass.take_job() {
+        let iter = (idx / BENCH_HEIGHT as u64) as i32;
+        let row0 = (idx % BENCH_HEIGHT as u64) as usize;
+        let rows = batch.min(BENCH_HEIGHT - row0);
+
+        // SAFETY: the rows [row0, row0 + rows) of this job are exclusively
+        // owned by it, the borrow ends before the job is accounted.
+        let buf = unsafe { std::slice::from_raw_parts_mut(pass.buf.ptr, pass.buf.len) };
+        match pass.engine {
             #[cfg(target_arch = "x86_64")]
             Engine::V1901Avx2 => unsafe {
                 crate::noise_avx2::render_rows_avx2(
                     buf,
-                    job.x0,
-                    job.y0,
-                    job.row0,
-                    job.rows,
-                    job.width,
+                    iter,
+                    iter,
+                    row0 as i32,
+                    rows,
+                    BENCH_WIDTH,
                     BENCH_WIDTH * 4,
                 );
             },
@@ -221,66 +145,154 @@ fn worker_loop(w: Arc<Worker>) {
             // SSE kernel is the fallback.
             _ => {
                 render_rows(
-                    job.engine,
+                    pass.engine,
                     buf,
-                    job.x0,
-                    job.y0,
-                    job.row0,
-                    job.rows,
-                    job.width,
+                    iter,
+                    iter,
+                    row0 as i32,
+                    rows,
+                    BENCH_WIDTH,
                     BENCH_WIDTH * 4,
                 );
             }
         }
 
-        {
-            let mut st = w.state.lock().unwrap();
-            w.units
-                .fetch_add((job.rows * job.width) as u64, Ordering::AcqRel);
-            st.busy = false;
-        }
-        w.cv.notify_all(); // wake a waiting dispatcher
+        pass.units
+            .fetch_add((rows * BENCH_WIDTH) as u64, Ordering::Relaxed);
     }
 }
 
-/// A pool of pinned workers sharing one frame buffer.
+/// A worker pool for one pass: pinned threads pulling rows from `PassState`.
 struct Pool {
-    workers: Vec<Arc<Worker>>,
+    pass: Arc<PassState>,
+    barrier: Arc<Barrier>,
     handles: Vec<std::thread::JoinHandle<()>>,
+}
+
+/// Rolling window of `(elapsed_ms, units)` samples used for the live score.
+///
+/// The printed value is the instantaneous rate over roughly the last
+/// [`LiveWindow::window_ms`] — not the average since the pass started. That is
+/// what makes the number appear at its steady value right away instead of
+/// creeping up from the CPU's clock-ramp at the beginning of the pass. The
+/// final number reported for the pass stays the plain `units / ms` average,
+/// exactly like CPU-Z.
+struct LiveWindow {
+    samples: VecDeque<(u64, u64)>,
+    window_ms: u64,
+}
+
+impl LiveWindow {
+    fn new(duration_ms: u64) -> Self {
+        LiveWindow {
+            // 1/4 of the pass, bounded so short passes still settle quickly.
+            samples: VecDeque::from([(0u64, 0u64)]),
+            window_ms: (duration_ms / 4).clamp(250, 1000),
+        }
+    }
+
+    fn push(&mut self, elapsed_ms: u64, units: u64) {
+        self.samples.push_back((elapsed_ms, units));
+        let target = elapsed_ms.saturating_sub(self.window_ms);
+        // Keep the newest sample that is still at or before the window edge as
+        // the left bound, so the window is at least `window_ms` wide.
+        while self.samples.len() > 2 && self.samples[1].0 <= target {
+            self.samples.pop_front();
+        }
+    }
+
+    /// Instantaneous rate over the retained window.
+    fn rate(&self, engine: Engine, elapsed_ms: u64, units: u64) -> f32 {
+        let (t0, u0) = *self.samples.front().unwrap_or(&(0, 0));
+        let dt = elapsed_ms.saturating_sub(t0).max(1);
+        score_of(engine, units.saturating_sub(u0), dt)
+    }
 }
 
 impl Pool {
     /// `cpu(i)` returns the logical CPU for worker `i`, or None to leave it
-    /// unpinned. Spawning and pinning happen before timing starts.
-    fn new<F: Fn(usize) -> Option<usize>>(n: usize, cpu: F) -> Pool {
-        let buf = SharedBuf::new();
-        let mut workers = Vec::with_capacity(n);
-        let mut handles = Vec::with_capacity(n);
-        for i in 0..n {
-            let (w, h) = Worker::spawn(Arc::clone(&buf), cpu(i));
-            workers.push(w);
-            handles.push(h);
+    /// unpinned. Threads are spawned and pinned before the timing window opens.
+    fn new<F>(n: usize, cpu: F, buf: Arc<SharedBuf>, engine: Engine, batch: usize) -> Pool
+    where
+        F: Fn(usize) -> Option<usize>,
+    {
+        let pass = PassState::new(buf, engine, batch);
+        let barrier = Arc::new(Barrier::new(n + 1));
+        let handles = (0..n)
+            .map(|i| {
+                let pass = Arc::clone(&pass);
+                let barrier = Arc::clone(&barrier);
+                let cpu = cpu(i);
+                std::thread::spawn(move || worker_loop(pass, barrier, cpu))
+            })
+            .collect();
+        Pool {
+            pass,
+            barrier,
+            handles,
         }
-        Pool { workers, handles }
     }
 
-    fn total_units(&self) -> u64 {
-        self.workers.iter().map(|w| w.units()).sum()
-    }
+    /// Release every worker and start the measurement window.
+    fn run<F>(&mut self, opts: &BenchOptions, pass_kind: Pass, on_progress: &mut F) -> PassResult
+    where
+        F: FnMut(Progress),
+    {
+        let threads = self.handles.len();
+        let start = Instant::now();
+        self.barrier.wait();
 
-    fn stop_and_join(&mut self) {
-        for w in &self.workers {
-            w.shutdown();
+        let mut window = LiveWindow::new(opts.duration_ms);
+        let mut next_report = opts.report_interval_ms;
+        loop {
+            let elapsed = start.elapsed().as_millis() as u64;
+            if elapsed >= opts.duration_ms {
+                break;
+            }
+            if opts.report_interval_ms > 0 && elapsed >= next_report {
+                next_report = elapsed + opts.report_interval_ms;
+                let units = self.pass.units.load(Ordering::Relaxed);
+                window.push(elapsed, units);
+                on_progress(Progress {
+                    pass: pass_kind,
+                    done: false,
+                    score: window.rate(opts.engine, elapsed, units),
+                    units,
+                    elapsed_ms: elapsed,
+                    duration_ms: opts.duration_ms,
+                    threads,
+                });
+                continue; // re-check the deadline before sleeping again
+            }
+            let remaining = opts.duration_ms.saturating_sub(elapsed);
+            std::thread::sleep(Duration::from_millis(remaining.min(2).max(1)));
         }
+
+        self.pass.stop.store(true, Ordering::Release);
         for h in self.handles.drain(..) {
             let _ = h.join();
         }
-    }
-}
+        // Includes the tail (at most one job per worker, i.e. <= batch rows),
+        // so the measured window is never shorter than the work it accounts.
+        let ms = start.elapsed().as_millis() as u64;
+        let units = self.pass.units.load(Ordering::Relaxed);
+        let score = score_of(opts.engine, units, ms);
+        on_progress(Progress {
+            pass: pass_kind,
+            done: true,
+            score,
+            units,
+            elapsed_ms: ms,
+            duration_ms: opts.duration_ms,
+            threads,
+        });
 
-impl Drop for Pool {
-    fn drop(&mut self) {
-        self.stop_and_join();
+        PassResult {
+            score,
+            units,
+            ms,
+            threads,
+        }
     }
 }
 
@@ -355,154 +367,35 @@ impl Default for BenchOptions {
     }
 }
 
-/// Build a job for the current iteration/row cursor. Advances the cursor.
-fn make_job(engine: Engine, iter: &mut i32, row: &mut usize, batch_rows: usize) -> Job {
-    let rpj = batch_rows.clamp(1, BENCH_HEIGHT);
-    let r = rpj.min(BENCH_HEIGHT - *row);
-    let job = Job {
-        engine,
-        x0: *iter,
-        y0: *iter,
-        row0: *row as i32,
-        rows: r,
-        width: BENCH_WIDTH,
-    };
-    *row += r;
-    if *row >= BENCH_HEIGHT {
-        *row = 0;
-        *iter += 1;
-    }
-    job
-}
-
-/// Run the single-thread benchmark (one worker, fully serialized).
+/// Run the single-thread benchmark: one worker, all logical CPUs are free for
+/// it, and the work is the same row sequence CPU-Z's 1T pass renders.
 pub fn run_single<F: FnMut(Progress)>(opts: &BenchOptions, on_progress: &mut F) -> PassResult {
-    let mut pool = Pool::new(1, |_| Some(0));
-    let worker = Arc::clone(&pool.workers[0]);
-
-    let mut row = 0usize;
-    let mut iter = 0i32;
-    let mut next_report = opts.report_interval_ms;
-
-    let start = Instant::now();
-    loop {
-        let job = make_job(opts.engine, &mut iter, &mut row, opts.batch_rows_single);
-        worker.dispatch_wait(&job);
-
-        let elapsed = start.elapsed().as_millis() as u64;
-        if elapsed >= opts.duration_ms {
-            break;
-        }
-        if opts.report_interval_ms > 0 && elapsed >= next_report {
-            next_report = elapsed + opts.report_interval_ms;
-            on_progress(Progress {
-                pass: Pass::Single,
-                done: false,
-                score: score_of(opts.engine, pool.total_units(), elapsed.max(1)),
-                units: pool.total_units(),
-                elapsed_ms: elapsed,
-                duration_ms: opts.duration_ms,
-                threads: 1,
-            });
-        }
-    }
-    worker.wait_idle();
-    let ms = start.elapsed().as_millis() as u64;
-    let units = pool.total_units();
-    let score = score_of(opts.engine, units, ms);
-    on_progress(Progress {
-        pass: Pass::Single,
-        done: true,
-        score,
-        units,
-        elapsed_ms: ms,
-        duration_ms: opts.duration_ms,
-        threads: 1,
-    });
-    pool.stop_and_join();
-
-    PassResult {
-        score,
-        units,
-        ms,
-        threads: 1,
-    }
+    let buf = SharedBuf::new();
+    let mut pool = Pool::new(
+        1,
+        |_| Some(0),
+        buf,
+        opts.engine,
+        opts.batch_rows_single,
+    );
+    pool.run(opts, Pass::Single, on_progress)
 }
 
-/// Run the multi-thread benchmark (round-robin dispatch to all workers, like
-/// CPU-Z's frame dispatcher).
+/// Run the multi-thread benchmark: one pinned worker per logical CPU.
 pub fn run_multi<F: FnMut(Progress)>(opts: &BenchOptions, on_progress: &mut F) -> PassResult {
-    let n = opts.threads.max(1);
-    let mut pool = Pool::new(n, Some);
+    let threads = opts.threads.max(1);
+    // Keep the in-flight rows pairwise disjoint: rows of different frames
+    // share the same buffer memory, so `threads * batch` must stay inside one
+    // frame (see module docs).
+    let batch = opts
+        .batch_rows_multi
+        .clamp(1, BENCH_HEIGHT)
+        .min(BENCH_HEIGHT / threads.max(1) + 1)
+        .max(1);
 
-    let mut row = 0usize;
-    let mut iter = 0i32;
-    let mut next_report = opts.report_interval_ms;
-
-    let start = Instant::now();
-    loop {
-        let job = make_job(opts.engine, &mut iter, &mut row, opts.batch_rows_multi);
-
-        // Hand the job to a free worker; if all are busy, yield and retry
-        // (CPU-Z's dispatcher polls with Sleep(0) as well).
-        loop {
-            let mut queued = false;
-            for w in &pool.workers {
-                if w.try_dispatch(&job) {
-                    queued = true;
-                    break;
-                }
-            }
-            if queued {
-                break;
-            }
-            std::thread::yield_now();
-        }
-
-        let elapsed = start.elapsed().as_millis() as u64;
-        if elapsed >= opts.duration_ms {
-            break;
-        }
-        if opts.report_interval_ms > 0 && elapsed >= next_report {
-            next_report = elapsed + opts.report_interval_ms;
-            let units = pool.total_units();
-            on_progress(Progress {
-                pass: Pass::Multi,
-                done: false,
-                score: score_of(opts.engine, units, elapsed.max(1)),
-                units,
-                elapsed_ms: elapsed,
-                duration_ms: opts.duration_ms,
-                threads: n,
-            });
-        }
-    }
-
-    // Wait for every in-flight job, then stop the pool. The final timestamp
-    // is taken after the tail work, exactly like CPU-Z.
-    for w in &pool.workers {
-        w.wait_idle();
-    }
-    let ms = start.elapsed().as_millis() as u64;
-    let units = pool.total_units();
-    let score = score_of(opts.engine, units, ms);
-    on_progress(Progress {
-        pass: Pass::Multi,
-        done: true,
-        score,
-        units,
-        elapsed_ms: ms,
-        duration_ms: opts.duration_ms,
-        threads: n,
-    });
-    pool.stop_and_join();
-
-    PassResult {
-        score,
-        units,
-        ms,
-        threads: n,
-    }
+    let buf = SharedBuf::new();
+    let mut pool = Pool::new(threads, Some, buf, opts.engine, batch);
+    pool.run(opts, Pass::Multi, on_progress)
 }
 
 /// Score formula: 17.01 = units/ms (sub_14002FC00 returns (float)v13 / v31);
