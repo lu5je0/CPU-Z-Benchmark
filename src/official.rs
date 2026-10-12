@@ -299,15 +299,23 @@ fn build_label(len: usize) -> String {
 }
 
 /// Cache location shared with the `q-cpuz-benchmark` wrapper.
+///
+/// `CPUZ_BENCHMARK_CACHE_DIR` is the directory that holds the binaries (the
+/// wrapper's `CPUZ_BENCH_CACHE_DIR`), while the other two are base directories
+/// that get a `cpuz-benchmark` component appended.
 pub fn default_cache_path() -> PathBuf {
-    let base = std::env::var_os("CPUZ_BENCHMARK_CACHE_DIR")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from))
-        .unwrap_or_else(|| {
-            let home = std::env::var_os("HOME").unwrap_or_default();
-            PathBuf::from(home).join(".cache")
-        });
-    base.join("cpuz-benchmark").join("cpuz_arm64.exe")
+    let dir = match std::env::var_os("CPUZ_BENCHMARK_CACHE_DIR") {
+        Some(d) if !d.is_empty() => PathBuf::from(d),
+        _ => {
+            let base = std::env::var_os("XDG_CACHE_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache")
+                });
+            base.join("cpuz-benchmark")
+        }
+    };
+    dir.join("cpuz_arm64.exe")
 }
 
 /// Where the official executable is, if we can find it.
