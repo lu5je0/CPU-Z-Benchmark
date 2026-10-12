@@ -9,9 +9,18 @@ cpuz_arm64.exe
     kernel instead of our LLVM build of the same algorithm. It is not part of
     this project's source and carries no license from us; all rights remain
     with CPUID. Remove it if CPUID objects.
-    The `q-cpuz-benchmark` wrapper in the author's dotfiles downloads it into
-    the local cache for the same purpose; nothing is executed beyond the
-    benchmark kernel.
+
+cpuz_x64.exe
+    CPU-Z for Windows x86_64, (c) CPUID, https://www.cpuid.com/. Extracted
+    unmodified from CPUID's cpu-z_3.01-en.zip and redistributed in this
+    project's GitHub releases for the same reason: on x86_64 the CLI prefers
+    CPUID's own 17.01 kernel as ground truth (`--official`). Same terms as
+    above: not covered by this project's MIT license, all rights remain with
+    CPUID. Remove it if CPUID objects.
+
+The `q-cpuz-benchmark` wrapper in the author's dotfiles downloads the matching
+    executable into the local cache for the same purpose; nothing is executed
+    beyond the benchmark kernel.
 
     If the file is absent, `cpuz-bench` falls back to its own engine and says
     so. To skip fetching it entirely, pass --no-official or set

@@ -23,6 +23,7 @@ Settings : 24 threads, 10000 ms/pass, batch 8 rows, live score
 === CPU-Z Benchmark (17.01) ===
 CPU (Single Thread) :      872   (8724480 px in 10004 ms)
 CPU (Multi Thread)  :    12665   (126746624 px in 10005 ms, 24 threads)
+Multi / Single      :    14.52x
 ```
 
 显示的是**最近约 1/4 pass 时长的瞬时速率**（`--interval` 控制重绘间隔，默认 100ms），
@@ -166,10 +167,33 @@ export CPUZ_ARM64_EXE=/path/to/cpuz_arm64.exe
 官方 exe 直接从本仓库的 release 拿：`cpuz_arm64.exe` 跟三平台二进制一起发布（从 CPUID 原始源
 <https://download.cpuid.com/cpu-z/arm64/> 下载后原样转发，见 [NOTICE](NOTICE)：该文件版权属 CPUID，
 不适用本项目的 MIT 许可）。v1.05 和 v1.06 都支持（用常量池签名定位，不依赖固定地址）。
-`q-cpuz-benchmark` 封装会自动把它放到缓存目录；想跳过就走 `CPUZ_NO_OFFICIAL=1`。
+`q-cpuz-benchmark` 封装会自动把它放到缓存目录；想跳过就走 `--no-official`。
 
-x86_64 上不需要 `--official`：那边内置引擎已经与官方发布分逐分对齐（13700KF 872↔官方 872），
-再跑 CPUID 的 x64 内核没有额外收益，所以 `--official` 在 x86_64 上会直接报错。
+### x86_64：默认同样用官方内核计分
+
+x86_64 上 CLI 默认也是官方内核优先：按 `--official <path>` -> `$CPUZ_X64_EXE` -> 缓存
+`${XDG_CACHE_HOME:-~/.cache}/cpuz-benchmark/cpuz_x64.exe` 的顺序查找；找不到就回退到内置引擎
+（内置引擎本来就与官方发布分一致，回退时会打提示）：
+
+```bash
+# 默认：官方内核优先，找不到就内置引擎
+./target/release/cpuz-bench
+./target/release/cpuz-bench --official /path/to/cpuz_x64.exe
+CPUZ_X64_EXE=/path/to/cpuz_x64.exe ./target/release/cpuz-bench
+
+# 强制只用内置引擎
+./target/release/cpuz-bench --no-official
+```
+
+官方 exe 同样随 Release 发布：从 <https://download.cpuid.com/cpu-z/> 的
+`cpu-z_3.01-en.zip` 里原样转发 `cpuz_x64.exe`（见 [NOTICE](NOTICE)）。
+已对 CPU-Z 2.10 / 2.15 / 2.18 / 3.01 验证（用 row worker 参数块前导签名定位，不依赖固定地址）：
+本机 13700KF 上官方内核单线程 865~872 px/ms，多线程 ~12500~12700，与本项目内置引擎一致。
+目前只映射了 17.01 内核；`--mode 19.01-*` 会自动回退到内置引擎。
+
+> 官方 x64 内核与我们的 Rust 移植在像素级并不逐字节相同（两者都是正确的，只是 LLVM 与 MSVC
+> 的标量浮点指令顺序不同，1 ulp 差异经 `fract(· × 43758.547)` 放大成个别像素的色差），
+> 分数才是对齐目标。
 
 ## 实现结构
 
@@ -182,6 +206,8 @@ src/
   kernel.rs     # 每像素混合渲染内核
   bench.rs      # 跑分循环：线程池 + 任务拉取 + 计时 + 评分 + 实时进度
   affinity.rs   # 每 worker 绑独立逻辑核
+  official.rs     # aarch64：映射并调用官方 cpuz_arm64.exe 的 17.01 内核
+  official_x64.rs # x86_64：映射并调用官方 cpuz_x64.exe 的 17.01 内核
   main.rs       # CLI + 实时分数面板
 .github/workflows/
   ci.yml        # push/PR 上跑测试与冒烟跑分

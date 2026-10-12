@@ -10,6 +10,8 @@ cargo test --release           # 单元测试（表值、噪声有限性）
 cargo run --release --bin micro  # 每像素 ns 微基准（三引擎对比）
 cargo run --release -- --duration 3000 --threads 24  # 快速验证分数
 cargo run --release -- --duration 3000 -q --json     # 脚本/CI 用输出
+cargo run --release -- --official /path/to/cpuz_x64.exe -q  # x86_64 官方内核（默认找到就用）
+cargo run --release -- --no-official -q              # 强制内置引擎
 ```
 
 发布：`git tag vX.Y.Z && git push origin vX.Y.Z` 触发 `.github/workflows/release.yml`，
@@ -19,6 +21,8 @@ cargo run --release -- --duration 3000 -q --json     # 脚本/CI 用输出
 ## 分数基准（16C/24T Intel 大小核，17.01 默认模式）
 
 - 实测单线程 872~873，官方参考 872；多线程 12400~12716，官方参考 12287~12659
+- **x86_64 上 CLI 默认优先官方 `cpuz_x64.exe` 内核**（真值来源；本机官方内核单线程 865~873 /
+  多线程 ~12500~12700，与内置引擎一致）。没 exe 时回退内置引擎并打提示，`--no-official` 强制内置
 - 分数 = units/ms（17.01）；units/ms/10（19.01）。units = 渲染行数×1024
 - **单点采样函数必须保持 `#[inline(never)]`**：CPU-Z 未内联这些调用，其 call 开销是工作量的一部分。全内联会让分数偏高 ~8%
 - `noise.rs` 用 `to_int_unchecked` 截断（对齐 cvttss2si）；`as i32` 是饱和转换，更慢
@@ -31,6 +35,7 @@ cargo run --release -- --duration 3000 -q --json     # 脚本/CI 用输出
 - `noise.rs` 17.01 / `noise1901.rs` 19.01 / `noise_avx2.rs` AVX2 引擎
 - `kernel.rs` 像素混合；`bench.rs` 线程池+派发+计时+评分+进度回调
 - `affinity.rs` 每 worker 绑独立逻辑核（CPU-Z 行为；多线程分数依赖它）
+- `official.rs`（aarch64）/ `official_x64.rs`（x86_64）：映射并调用 CPUID 自家二进制里的 17.01 内核计分
 - 4MiB RGBA buffer 所有 worker 共享无锁，行不重叠由派发顺序保证；**不要加 Mutex**（会串行化毁分数）
 - 逆向笔记：CPU-Z 2.x，函数地址 sub_1400330A0（17.01 单线程驱动）、sub_140033460（多线程驱动）、
   sub_14004DAE0/CE0（17.01 噪声 A/B）、sub_14004DEF0（像素循环）、sub_14004E170（单行 worker）
@@ -79,6 +84,34 @@ cargo run --release -- --duration 3000 -q --json     # 脚本/CI 用输出
 - ARM64 官方的计分链（参考）：计分单位是 **pixels/ms**（一个 1024×1024 frame 的 work 计数器是 1048576），
   参考分表（13 项，X Elite 820/9165）就在这个单位下；两次 10s pass + `Sleep(10)`，4MiB buffer，`CBenchCPU_v17`。
   见下面的“ARM64 保真度”一节。
+
+## x86_64 官方内核（官方 `cpuz_x64.exe`）
+
+x86_64 上 CLI 默认也是官方内核优先（`--official <path>` → `$CPUZ_X64_EXE` →
+`${XDG_CACHE_HOME:-~/.cache}/cpuz-benchmark/cpuz_x64.exe`），找不到才回退内置引擎并打提示；
+`--no-official` 强制内置。release 会 vendor `cpuz_x64.exe`（从 CPUID 的 `cpu-z_<ver>-en.zip`
+里取出），`q-cpuz-benchmark` 也会自动放进缓存。**只映射了 17.01**，`--mode 19.01-*` 自动回退。
+
+`src/official_x64.rs` 的做法：
+
+- 自己解析 PE：按段 VA 把 `.text`/`.rdata`/`.data` 摆进一块匿名映射再 `mprotect(RX)`。
+  RIP 相对引用因此全部有效；2.10~3.01 这些构建没有 `.reloc`，但内核调用链只用 PC 相对寻址，
+  映射基址无所谓（不是 Windows loader，没有 import 解析）
+- **row worker 用签名定位，不写死地址**：`8b 42 34 44 8b 4a 2c 44 8b 42 28`
+  （`mov eax,[rdx+34]` / `mov r9d,[rdx+2c]` / `mov r8d,[rdx+28]`），在 2.10 / 2.15 / 2.18 / 3.01
+  的 `.text` 里都唯一，函数都是同一段 65 字节直线代码
+- 参数块（与 ARM64 相同布局）：`+18 ctx, +20 dst, +28 x0, +2c y0, +30 width, +34 row`，
+  输出 `+3c work(out), +40 active(out)`；**ctx 的梯度表指针在 `+30`**（ARM64 是 `+38`）
+- work 返回 `width`，所以一帧 1048576 units，score = pixels/ms
+- **调用约定**：内核是 MSVC 的 Win64 ABI（rcx/rdx/r8/r9），我们从 Rust 的 `extern "C"`
+  （SysV：rdi/rsi/rdx/rcx/…）进 row worker。worker 只读 `rdx` 的参数块、不用别的入参寄存器，
+  所以直接声明成 3 参数的 `extern "C"` 调用（第 3 个 SysV 参数正好落在 rdx）；它不碰 shadow space，
+  而 Win64 会保留 rdi/rsi 等非易失寄存器，跨 ABI 调用是安全的
+- 与我们的 Rust 移植**不做逐字节对拍**：喂同一张梯度表时两边帧仍有差异（LLVM 与 MSVC 的标量
+  运算顺序差 ~1 ulp，经 `fract(· × 43758.547)` 放大成个别像素色差）。x64 的验收标准是分数一致
+  （ARM 那边的“零梯度表逐字节相同”只验证了结构，不代表逐位等价）
+- 实测（本机 13700KF）：官方 2.10 / 2.15 / 2.18 / 3.01 内核单线程 865~879 px/ms、多线程 ~12500~12700，
+  与内置引擎同档；`--compare` 可比差值
 
 ## ARM64 保真度（官方 `cpuz_arm64.exe`）
 
