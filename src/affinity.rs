@@ -3,8 +3,14 @@
 //! sched_setaffinity so each worker is pinned to its own logical CPU,
 //! which is critical for the multi-threaded score (CPU-Z pins every worker
 //! thread to a distinct core).
+//!
+//! Android is a separate `target_os` in Rust but is bionic/Linux underneath,
+//! and the libc crate exposes the same `sched_setaffinity` + `CPU_SET` API
+//! there, so Termux gets the identical per-core pinning. (Pinning matters even
+//! more on big.LITTLE SoCs: without it the scheduler can park several workers
+//! on the same little core.)
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 pub fn pin_thread_to_cpu(cpu: usize) {
     unsafe {
         let mut set: libc::cpu_set_t = std::mem::zeroed();
@@ -32,5 +38,9 @@ pub fn pin_thread_to_cpu(cpu: usize) {
     }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "windows"
+)))]
 pub fn pin_thread_to_cpu(_cpu: usize) {}

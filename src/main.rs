@@ -25,7 +25,15 @@ const PLATFORM_NOTE: Option<&str> = Some(
      but --official <cpuz_x64.exe> (or $CPUZ_X64_EXE / the cache) scores with\n        \
      CPUID's own kernel instead.",
 );
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", target_os = "android"))]
+const PLATFORM_NOTE: Option<&str> = Some(
+    "Note: Android/Termux build — this is a scalar AArch64 workload, so the built-in\n        \
+     engine's score is not the number CPU-Z prints. CPUID's Windows-ARM64 kernel\n        \
+     is plain AArch64 and runs natively here: pass --official <cpuz_arm64.exe>\n        \
+     (or set CPUZ_ARM64_EXE / drop it in the cache) to score with CPU-Z's exact\n        \
+     code instead of our faster LLVM build.",
+);
+#[cfg(all(target_arch = "aarch64", not(target_os = "android")))]
 const PLATFORM_NOTE: Option<&str> = Some(
     "Note: aarch64 build — this crate's LLVM build renders the same, verified-identical\n        \
      kernel but runs faster than CPUID's MSVC build, so the replica score is not the\n        \
@@ -207,17 +215,51 @@ fn parse_args() -> Result<Cli, ()> {
 
 /// Best-effort CPU brand string, without extra dependencies.
 fn cpu_name() -> String {
-    if let Ok(text) = std::fs::read_to_string("/proc/cpuinfo") {
-        for line in text.lines() {
-            if let Some(rest) = line.strip_prefix("model name") {
+    let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").ok();
+    // x86 kernels carry "model name"; ARM kernels usually only carry "Hardware"
+    // (the SoC) plus a generic "Processor" line.
+    let field = |key: &str| -> Option<String> {
+        for line in cpuinfo.as_deref()?.lines() {
+            if let Some(rest) = line.strip_prefix(key) {
                 if let Some((_, value)) = rest.split_once(':') {
                     let name = value.trim();
                     if !name.is_empty() {
-                        return name.to_string();
+                        return Some(name.to_string());
                     }
                 }
             }
         }
+        None
+    };
+
+    for key in ["model name", "Hardware"] {
+        if let Some(name) = field(key) {
+            return name;
+        }
+    }
+    // Android vendors redact or trim /proc/cpuinfo for apps, but the property
+    // service still knows the SoC (it short-circuits the generic "Processor:
+    // AArch64 Processor rev N" line below).
+    if cfg!(target_os = "android") {
+        for prop in [
+            "ro.soc.model",
+            "ro.board.platform",
+            "ro.product.board",
+            "ro.hardware",
+        ] {
+            if let Ok(out) = std::process::Command::new("/system/bin/getprop")
+                .arg(prop)
+                .output()
+            {
+                let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !name.is_empty() {
+                    return name;
+                }
+            }
+        }
+    }
+    if let Some(name) = field("Processor") {
+        return name;
     }
     if cfg!(target_os = "macos") {
         if let Ok(out) = std::process::Command::new("sysctl")

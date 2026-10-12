@@ -165,7 +165,16 @@ impl Kernel {
             std::ptr::copy_nonoverlapping(bytes.as_ptr(), code as *mut u8, len);
             if libc::mprotect(code, len, libc::PROT_READ | libc::PROT_EXEC) != 0 {
                 libc::munmap(code, len);
-                return Err("mprotect(PROT_EXEC) failed".to_string());
+                // Android enforces W^X per app: execmem is denied for apps that
+                // target a recent SDK, so the RX transition fails even though
+                // the mmap and the copy succeeded.
+                let hint = if cfg!(target_os = "android") {
+                    " (Android denied executable memory for this app; \
+                     JIT/execmem is disabled under its SELinux domain)"
+                } else {
+                    ""
+                };
+                return Err(format!("mprotect(PROT_EXEC) failed{hint}"));
             }
         }
         let tile: TileFn = unsafe { std::mem::transmute((code as *mut u8).add(tile_off)) };
