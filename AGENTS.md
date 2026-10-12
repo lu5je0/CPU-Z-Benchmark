@@ -101,17 +101,20 @@ cargo run --release -- --duration 3000 -q --json     # 脚本/CI 用输出
 - **算法等价的硬证据**：把梯度表整个设成 0（两边喂同一张表）后，官方内核与我们的 `render_rows`
   渲染出的 1024×1024 帧**逐字节完全相同（0/4194304 差异）**。所以差异只在梯度表里 sin/cos 的 ulp——
   表值乘 43758.547 后 frac 会把 1 ulp 放大成约 ±10 的像素色差（正常运行时 98% 像素差 1~15，这是预期的）。
-- **分数差是构建产物差异，不是工作量差异**：本机 M5 Pro，官方内核 626–636 ms/帧（≈1648 px/ms），
-  我们的 release 标量版 540–563 ms/帧（≈1851 px/ms）。我们每采样执行 ~375 条指令（官方 ~316 条），
+- **分数差是构建产物差异，不是工作量差异**：本机 M5 Pro（15 核），官方内核单核 626.6 ms/帧
+  （**1674 px/ms**）、多核 15T 57.1 ms/帧（**18368 px/ms**，ratio 10.98）；我们的 release 标量版
+  单核 ~1833、多核 ~21874（+9.5% / +19%）。我们每采样执行 ~375 条指令（官方 ~316 条），
   却更快，即 IPC 更高——MSVC 的 AArch64 调度比 LLVM 差。`opt-level=1` 仍快 ~8%。
-  **没有任何合法手段能把它拉到 ±1%**，除非手写 aarch64 汇编复刻 MSVC 的指令序列。
+  **没有任何合法手段能把我们的构建拉到 ±1%**，除非手写 aarch64 汇编复刻 MSVC 的指令序列。
+  要 CPU-Z 的真实分数，就用这个 harness 跑官方内核，而不是用我们的构建去逼近。
 
 复现：
 
 ```sh
-clang -O2 -o /tmp/oak scripts/official_arm64_kernel.c -lm
-/tmp/oak /path/to/cpuz_arm64.exe /tmp/official.raw   # 打印 px/ms，可选 dump 一帧
-./target/release/cpuz-bench --duration 3000 --single-only -q   # 我们这边对比
+clang -O2 -o /tmp/oak scripts/official_arm64_kernel.c -lm -lpthread
+/tmp/oak /path/to/cpuz_arm64.exe -            # 单核 + 全核分数（第 3 个参数可指定线程数）
+/tmp/oak /path/to/cpuz_arm64.exe /tmp/official.raw 1   # 单核，并 dump 一帧到文件
+./target/release/cpuz-bench --duration 3000 -q         # 我们这边同口径对比
 ```
 
 ## 提交约定
