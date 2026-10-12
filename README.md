@@ -13,7 +13,7 @@ TTY 下运行时先出现单线程、再多线程，分数从第一次采样（2
 之后小幅抖动到定稿——不会从低往高慢慢爬：
 
 ```
-cpuz-bench 0.3.0 - CPU-Z benchmark (17.01)
+cpuz-bench 0.4.0 - CPU-Z benchmark (17.01)
 CPU      : 13th Gen Intel(R) Core(TM) i7-13700KF
 Settings : 24 threads, 10000 ms/pass, batch 8 rows, live score
 
