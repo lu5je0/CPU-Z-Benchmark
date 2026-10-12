@@ -1,0 +1,20 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Unit tests
+        run: cargo test --release
+      - name: Build
+        run: cargo build --release --bin cpuz-bench
+      - name: Smoke run
+        run: ./target/release/cpuz-bench --duration 1000 --single-only --no-live -q

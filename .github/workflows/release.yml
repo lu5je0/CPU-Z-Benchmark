@@ -1,0 +1,61 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.asset }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: linux-x86_64
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset: linux-aarch64
+          - runner: macos-14
+            target: aarch64-apple-darwin
+            asset: macos-aarch64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --bin cpuz-bench --target ${{ matrix.target }}
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/cpuz-bench" "dist/cpuz-bench-${{ matrix.asset }}"
+          chmod +x "dist/cpuz-bench-${{ matrix.asset }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cpuz-bench-${{ matrix.asset }}
+          path: dist/cpuz-bench-${{ matrix.asset }}
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: List assets
+        run: ls -l dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/cpuz-bench-*
+          generate_release_notes: true
