@@ -21,6 +21,12 @@ jobs:
         run: cargo build --release --bin cpuz-bench
       - name: Cross-check aarch64 (release binaries)
         run: cargo check --release --bin cpuz-bench --target aarch64-unknown-linux-gnu
+      - name: Cross-check Android aarch64 (Termux)
+        # Same scalar-kernel config as the other aarch64 targets; `cargo check`
+        # needs no NDK because it never links.
+        run: |
+          rustup target add aarch64-linux-android
+          cargo check --release --bin cpuz-bench --target aarch64-linux-android
       - name: Kernel instruction mix (informational on x86-64)
         run: python3 scripts/check_scalar_kernel.py target/release/cpuz-bench
       - name: Smoke run
