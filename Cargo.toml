@@ -1,6 +1,6 @@
 [package]
 name = "cpuz-bench"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 description = "Rust reimplementation of the CPU-Z benchmark (OpenSimplex2 noise rendering)"
 license = "MIT"
