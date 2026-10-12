@@ -1,13 +1,13 @@
 //! Run CPU-Z's own Windows-x64 benchmark kernel natively on this machine.
 //!
-//! This is the x86_64 counterpart of [`crate::official`] (aarch64). CPUID ships
-//! `cpuz_x64.exe`; the 17.01 render kernel inside it is a self-contained tree of
-//! functions (row worker -> pixel loop -> noise A/B -> simplex sample ->
-//! gradient lookup) that only reads a small parameter block, one 4096-float
-//! gradient table handed in through the context pointer, and RIP-relative
-//! float constants from `.rdata`. Nothing in that call tree touches an import,
-//! so we can map the user's own copy of the executable and call the kernel
-//! directly -- no Windows PE loader and no emulation.
+//! This is the x86_64 counterpart of the aarch64 loader in `official.rs`.
+//! CPUID ships `cpuz_x64.exe`; the 17.01 render kernel inside it is a
+//! self-contained tree of functions (row worker -> pixel loop -> noise A/B ->
+//! simplex sample -> gradient lookup) that only reads a small parameter block,
+//! one 4096-float gradient table handed in through the context pointer, and
+//! RIP-relative float constants from `.rdata`. Nothing in that call tree
+//! touches an import, so we can map the user's own copy of the executable and
+//! call the kernel directly -- no Windows PE loader and no emulation.
 //!
 //! Nothing here bundles or redistributes the executable: the user supplies it
 //! via `--official <path>`, `CPUZ_X64_EXE`, or the shared cache path that the
@@ -15,7 +15,10 @@
 //!
 //! Layout recovered from the CPU-Z 3.01 disassembly (benchmark version 17.01):
 //!
-//! * the row worker is the only caller of the pixel loop. It reads
+//! * the row worker is a 65-byte straight-line function whose parameter-block
+//!   prologue (`mov eax,[rdx+0x34]`, `mov r9d,[rdx+0x2c]`, `mov r8d,[rdx+0x28]`)
+//!   is unique in `.text` for CPU-Z 2.10 through 3.01, which is how we locate
+//!   it without hard-coding an address. It reads
 //!   `+0x18 ctx, +0x20 dst, +0x28 x0, +0x2c y0, +0x30 width, +0x34 row`, writes
 //!   the row's pixel count to `+0x3c work` and clears `+0x40 active`, exactly
 //!   like the ARM64 build and like this crate's own worker pool;
