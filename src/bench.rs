@@ -377,13 +377,31 @@ impl Default for BenchOptions {
     }
 }
 
+/// Which CPU the single-thread pass pins its only worker to.
+///
+/// CPU-Z uses logical CPU 0. That is right on a desktop, where the cores are
+/// equivalent, but on a big.LITTLE mobile SoC the kernel numbers the fastest
+/// cluster last, so CPU 0 is a mid-tier performance core and the prime cores
+/// stay idle. Android therefore pins to the fastest reachable core; every other
+/// platform keeps CPU-Z's CPU 0, which is what the validated x86 and Apple
+/// Silicon numbers were measured with. See `affinity::fastest_cpu`.
+#[cfg(target_os = "android")]
+fn single_thread_cpu() -> Option<usize> {
+    crate::affinity::fastest_cpu().or(Some(0))
+}
+
+#[cfg(not(target_os = "android"))]
+fn single_thread_cpu() -> Option<usize> {
+    Some(0)
+}
+
 /// Run the single-thread benchmark: one worker, all logical CPUs are free for
 /// it, and the work is the same row sequence CPU-Z's 1T pass renders.
 pub fn run_single<F: FnMut(Progress)>(opts: &BenchOptions, on_progress: &mut F) -> PassResult {
     let buf = SharedBuf::new();
     let mut pool = Pool::new(
         1,
-        |_| Some(0),
+        |_| single_thread_cpu(),
         buf,
         opts.engine,
         opts.batch_rows_single,
