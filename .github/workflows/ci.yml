@@ -45,15 +45,15 @@ jobs:
           cp target/release/cpuz-bench /tmp/cpuz-bench-scalar
           /tmp/cpuz-bench-scalar --duration 4000 -q
       - name: Build natural-vectorisation variant
-        # RUSTFLAGS replaces the target rustflags from .cargo/config.toml,
-        # which is exactly what we want for the A/B.
+        # Dropping the cargo config is the cleanest way to let LLVM vectorise
+        # again (RUSTFLAGS would have to replace the target rustflags wholesale).
         run: |
-          RUSTFLAGS="-C opt-level=3 -C lto" cargo build --release --bin cpuz-bench
+          rm .cargo/config.toml
+          cargo build --release --bin cpuz-bench
+          cp target/release/cpuz-bench /tmp/cpuz-bench-natural
       - name: Score (LLVM free to SLP/loop vectorise)
         run: |
-          cp target/release/cpuz-bench /tmp/cpuz-bench-natural
           python3 scripts/check_scalar_kernel.py /tmp/cpuz-bench-natural || true
           /tmp/cpuz-bench-natural --duration 4000 -q
       - name: Summary
-        run: |
-          echo "compare the two score blocks above: scalar (shipped) vs vectorised"
+        run: 'echo "compare the two score blocks above: scalar (shipped) vs vectorised"'
