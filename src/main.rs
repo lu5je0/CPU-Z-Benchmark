@@ -87,6 +87,7 @@ Options:
   --no-live          Disable the live score panel
   --json             Machine readable output
   -q, --quiet        Only print the score lines
+  -u, --update       Update this binary to the latest release and exit
   -V, --version      Print version
   -h, --help         Show this help
 
@@ -175,6 +176,9 @@ fn parse_args() -> Result<Cli, ()> {
             "--no-live" => live = false,
             "--json" => json = true,
             "-q" | "--quiet" => quiet = true,
+            "-u" | "--update" => {
+                std::process::exit(cpuz_bench::update::run(VERSION));
+            }
             "-V" | "--version" => {
                 println!("cpuz-bench {VERSION}");
                 std::process::exit(0);

@@ -15,3 +15,5 @@ pub mod official;
 #[cfg(target_arch = "x86_64")]
 pub mod official_x64;
 pub mod table;
+/// `-u/--update`: self-update from the project's GitHub releases (uses curl).
+pub mod update;

@@ -110,6 +110,14 @@ chmod +x cpuz-bench && ./cpuz-bench
 dotfiles 里封装了自动下载 + 缓存 + 运行的入口：`q-cpuz-benchmark`
 （`bin/common/q-cpuz-benchmark`，用法 `q-cpuz-benchmark [--duration 5000] ...`）。
 
+已经装好之后，自己更新用 `-u`（走系统 `curl`，校验下载产物后原子替换自身；
+建议路径只读时如 nix store / `/usr/local` 会报错）：
+
+```bash
+./cpuz-bench -u               # 看最新 release，版本不同就更新并退出
+CPUZ_BENCH_TAG=v0.4.2 ./cpuz-bench -u   # 更新/回退到指定 tag
+```
+
 ## 构建
 
 ```bash
@@ -137,6 +145,9 @@ cargo build --release
 
 # 只要两行分数（不发面板）
 ./target/release/cpuz-bench -q
+
+# 更新二进制到最新 release（查 GitHub latest，下载后校验并替换自身，然后退出）
+./target/release/cpuz-bench -u
 ```
 
 完整选项见 `cpuz-bench --help`。
@@ -250,6 +261,7 @@ src/
   affinity.rs   # 每 worker 绑独立逻辑核
   official.rs     # aarch64：映射并调用官方 cpuz_arm64.exe 的 17.01 内核
   official_x64.rs # x86_64：映射并调用官方 cpuz_x64.exe 的 17.01 内核
+  update.rs     # -u/--update：curl 拉最新 release 资产，校验后原子替换自身
   main.rs       # CLI + 实时分数面板
 .github/workflows/
   ci.yml        # push/PR 上跑测试与冒烟跑分

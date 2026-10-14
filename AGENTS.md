@@ -12,11 +12,15 @@ cargo run --release -- --duration 3000 --threads 24  # 快速验证分数
 cargo run --release -- --duration 3000 -q --json     # 脚本/CI 用输出
 cargo run --release -- --official /path/to/cpuz_x64.exe -q  # x86_64 官方内核（默认找到就用）
 cargo run --release -- --no-official -q              # 强制内置引擎
+cargo run --release -- -u                            # 自更新（curl 拉最新 release 资产并替换自身）
 ```
 
 发布：`git tag vX.Y.Z && git push origin vX.Y.Z` 触发 `.github/workflows/release.yml`，
 构建 3 个平台产物并发布 Release（资产名 `cpuz-bench-<linux|macos>-<x86_64|aarch64>`）。
 `workflow_dispatch` 也能手动跑（只上传 artifact，不发 Release）。
+更新入口在 `src/update.rs`（`-u`）：查 `releases/latest` 的 302 拿 tag，比版本，下载同名资产，
+校验 ELF/Mach-O/PE magic + 跑一次 `-V` 对版本，再 rename 覆盖自身（Windows 先把自己挪成 `.exe.old`）。
+走系统 `curl`，不给 crate 加 HTTP 依赖；`CPUZ_BENCH_TAG` / `CPUZ_BENCH_URL_PREFIX` / `CPUZ_BENCH_LATEST_URL` 可覆盖。
 
 ## 分数基准（16C/24T Intel 大小核，17.01 默认模式）
 
