@@ -164,6 +164,10 @@ fn latest_tag() -> Result<String, String> {
         dev_null(),
         "-w",
         "%{url_effective}",
+        // GitHub's redirect for releases/latest can stay cached at the edge for a
+        // few seconds after a release, which would look like "nothing newer".
+        "-H",
+        "Cache-Control: no-cache",
         "--connect-timeout",
         CHECK_TIMEOUT,
         "--max-time",
