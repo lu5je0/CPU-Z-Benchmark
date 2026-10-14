@@ -364,7 +364,7 @@ impl Default for BenchOptions {
     fn default() -> Self {
         BenchOptions {
             engine: Engine::V1701,
-            duration_ms: 10000,
+            duration_ms: 5000,
             run_single: true,
             run_multi: true,
             threads: std::thread::available_parallelism()

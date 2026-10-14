@@ -73,7 +73,7 @@ Options:
                        19.01-sse    19.01 SSE
                        19.01-avx2   19.01 AVX2 (requires AVX2 CPU)
                        19.01-avx512 19.01 AVX512 (falls back to AVX2)
-  --duration <ms>    Test duration per pass (default 10000)
+  --duration <ms>    Test duration per pass (default 5000)
   --interval <ms>    Live panel repaint interval (default 100, 0 = off)
   --batch-rows <n>   Rows per dispatched job (default: single 1, multi 8)
   --threads <n>      Worker threads for the multi-thread pass (default: all CPUs)

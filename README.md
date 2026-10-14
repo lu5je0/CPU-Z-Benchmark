@@ -5,7 +5,7 @@ Rust 复刻的 CPU-Z 基准测试（CPU Benchmark），算法与官方 CPU-Z 一
 - **工作负载**：1024×1024 RGBA 噪声图渲染，每像素做两次噪声采样 + 颜色混合
 - **噪声算法**：OpenSimplex2 2D（Kurt Spencer, Public Domain），CPU-Z 使用的变体（拉伸常量 0.36602542 / 0.21132487，4096 项梯度表）
 - **评分公式**：`score = 完成的工作单元数 / 耗时毫秒`（与 CPU-Z 一致，单线程/多线程分开测）
-- **跑分流程**：先单线程跑满 10 秒，再多线程跑满 10 秒，两个分数在跑的过程中实时刷新并逐渐稳定
+- **跑分流程**：默认先单线程跑满 5 秒，再多线程跑满 5 秒，两个分数在跑的过程中实时刷新并逐渐稳定
 
 ## 实时分数
 
@@ -15,14 +15,14 @@ TTY 下运行时先出现单线程、再多线程，分数从第一次采样（2
 ```
 cpuz-bench 0.4.2 - CPU-Z benchmark (17.01)
 CPU      : 13th Gen Intel(R) Core(TM) i7-13700KF
-Settings : 24 threads, 10000 ms/pass, batch 8 rows, live score
+Settings : 24 threads, 5000 ms/pass, batch 8 rows, live score
 
-  Single Thread [████████████████████████] 100%  score    872   10.0s/10.0s
-  Multi  Thread [███████░░░░░░░░░░░░░░░░]  30%  score  12711    3.0s/10.0s
+  Single Thread [████████████████████████] 100%  score    872    5.0s/5.0s
+  Multi  Thread [███████░░░░░░░░░░░░░░░░]  30%  score  12711    1.5s/5.0s
 
 === CPU-Z Benchmark (17.01) ===
-CPU (Single Thread) :      872   (8724480 px in 10004 ms)
-CPU (Multi Thread)  :    12665   (126746624 px in 10005 ms, 24 threads)
+CPU (Single Thread) :      872   (4364288 px in 5004 ms)
+CPU (Multi Thread)  :    12665   (63373312 px in 5004 ms, 24 threads)
 Multi / Single      :    14.52x
 ```
 
@@ -127,7 +127,7 @@ cargo build --release
 ## 运行
 
 ```bash
-# 默认 17.01 SSE，跑满 10s 单线程 + 10s 多线程
+# 默认 17.01 SSE，跑满 5s 单线程 + 5s 多线程
 ./target/release/cpuz-bench
 
 # 指定模式
@@ -137,7 +137,7 @@ cargo build --release
 ./target/release/cpuz-bench --single-only
 ./target/release/cpuz-bench --multi-only
 
-# 指定测试时长（毫秒，默认 10000）与实时刷新间隔（默认 100ms）
+# 指定测试时长（毫秒，默认 5000）与实时刷新间隔（默认 100ms）
 ./target/release/cpuz-bench --duration 5000 --interval 100
 
 # 机器可读输出（适合脚本/CI）
