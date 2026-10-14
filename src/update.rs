@@ -66,6 +66,17 @@ fn update(current_version: &str) -> Result<(), String> {
         println!("cpuz-bench {current_version} is up to date (latest {tag})");
         return Ok(());
     }
+    // A local build newer than the newest release (e.g. right after a version
+    // bump, before the tag exists) must not be silently downgraded.
+    if let (Some(latest), Some(current)) = (version_key(&version), version_key(current_version)) {
+        if latest < current {
+            println!(
+                "cpuz-bench {current_version} is newer than the latest release ({tag}); \
+                 nothing to do"
+            );
+            return Ok(());
+        }
+    }
 
     let url = format!("{}/{asset}", url_prefix(&tag));
     println!("update: {current_version} -> {version} ({url})");
@@ -91,6 +102,23 @@ fn update(current_version: &str) -> Result<(), String> {
     }
     println!("update: {} is now {version}", exe.display());
     Ok(())
+}
+
+/// Numeric ordering key for a release version (`0.4.10` > `0.4.9`).
+///
+/// Returns `None` for anything that is not plain dotted numbers (pre-release
+/// suffixes, weird tags): callers then treat the versions as simply different.
+fn version_key(version: &str) -> Option<Vec<u64>> {
+    let core = version.trim().split(['-', '+']).next().unwrap_or("");
+    let parts = core
+        .split('.')
+        .map(|p| p.parse::<u64>().ok())
+        .collect::<Option<Vec<_>>>()?;
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts)
+    }
 }
 
 fn env_opt(name: &str) -> Option<String> {
@@ -213,16 +241,16 @@ fn verify(path: &Path, version: &str) -> Result<(), String> {
 }
 
 fn has_native_magic(data: &[u8]) -> bool {
-    const MAGIC: [[u8; 4]; 7] = [
-        [0x7f, b'E', b'L', b'F'],
-        [b'M', b'Z', 0, 0], // PE
-        [0xcf, 0xfa, 0xed, 0xfe], // Mach-O 64 LE
-        [0xce, 0xfa, 0xed, 0xfe], // Mach-O 32 LE
-        [0xfe, 0xed, 0xfa, 0xcf], // Mach-O 64 BE
-        [0xfe, 0xed, 0xfa, 0xce], // Mach-O 32 BE
-        [0xca, 0xfe, 0xba, 0xbe], // Mach-O universal
+    const MAGIC: [&[u8]; 7] = [
+        b"\x7fELF",
+        b"MZ", // DOS/PE stub
+        b"\xcf\xfa\xed\xfe", // Mach-O 64 LE
+        b"\xce\xfa\xed\xfe", // Mach-O 32 LE
+        b"\xfe\xed\xfa\xcf", // Mach-O 64 BE
+        b"\xfe\xed\xfa\xce", // Mach-O 32 BE
+        b"\xca\xfe\xba\xbe", // Mach-O universal
     ];
-    data.len() > 4 && MAGIC.iter().any(|m| m[..] == data[..4])
+    data.len() >= 4 && MAGIC.iter().any(|m| data.starts_with(m))
 }
 
 fn temp_path(exe: &Path) -> PathBuf {
@@ -278,4 +306,28 @@ fn curl(args: &[&str]) -> Command {
     let mut cmd = Command::new("curl");
     cmd.args(args).stdin(Stdio::null());
     cmd
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_ordering() {
+        assert!(version_key("0.4.10") > version_key("0.4.9"));
+        assert!(version_key("0.4.2") < version_key("0.5.0"));
+        assert_eq!(version_key("0.4.3"), version_key("0.4.3"));
+        assert_eq!(version_key("1.0.0-rc1"), version_key("1.0.0"));
+        // Non-numeric tags fall through to "just download it".
+        assert!(version_key("nightly").is_none());
+        assert!(version_key("v").is_none());
+    }
+
+    #[test]
+    fn native_magic() {
+        assert!(has_native_magic(&[0x7f, b'E', b'L', b'F', 0x02]));
+        assert!(has_native_magic(b"MZ\x90\x00\x03"));
+        assert!(!has_native_magic(b"<html>"));
+        assert!(!has_native_magic(b"ELF"));
+    }
 }
